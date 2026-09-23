@@ -8,5 +8,6 @@
     "author": "Hanno",
     "version": "0.6.0",
     "homePage": "https://github.com/Dulgadurbit/SillyCanvas",
-    "auto_update": false
+    "auto_update": false,
+    "description": "Build your SillyTavern prompt as a graph: blocks, wires, Generate passes and Deciders, with a full preview before anything is sent."
 }

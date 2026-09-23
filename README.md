@@ -1,280 +1,117 @@
 # Silly Canvas
 
-A node canvas for building SillyTavern prompts. Instead of a fixed list, your
-prompt is a graph: blocks are prompts, wires say how they combine, and you can
-put extra model calls (Generate blocks) in the middle — a thinking pass that
-plans the scene before the reply is written, say. The whole graph compiles
-into the exact messages that will be sent, which you can read before a single
-token is spent. When it is switched off, SillyTavern behaves exactly as usual.
+A SillyTavern extension that lets you build your prompt as a graph instead of a list.
+
+Each block is a piece of the prompt: your own text, one of SillyTavern's prompts, the chat history, World Info. Wires connect the blocks, and the canvas turns them into the exact messages that get sent. You can read the whole prompt before anything goes out.
+
+You can also put extra model calls in the middle of the graph. A Generate block can plan the scene, list what each character wants, or clean up a draft, and only its answer goes into the final prompt. A Decider block can send the prompt down different paths depending on what the chat or the text contains.
+
+When the canvas is switched off, SillyTavern builds the prompt exactly as it normally does.
 
 ## Install
 
-In SillyTavern: **Extensions → Install extension**, paste
-`https://github.com/Dulgadurbit/SillyCanvas`, and install. Then open it from the
-canvas button next to Send, the wand menu, or `/canvas`.
+1. In SillyTavern, open **Extensions** and click **Install extension**.
+2. Paste `https://github.com/Dulgadurbit/SillyCanvas` and install.
+3. Reload SillyTavern.
 
----
+Open the canvas with the button next to Send, from the wand menu, or by typing `/canvas`.
 
-## Design notes
+Silly Canvas works with Chat Completion APIs (OpenAI, OpenRouter, Claude, Gemini and others). Text Completion is wired up but has had very little testing.
 
-A node canvas for SillyTavern prompts. Blocks are prompts, wires say how they
-combine, and the whole graph compiles into the message array that leaves the
-machine — which you can read in full before a single token is spent.
+## Getting started
 
-## Milestone 1 — what works now
+1. Open the canvas and click the wand button (**Seed from SillyTavern's current prompt order**). This copies your current prompt order onto the canvas, so you start from what you already send.
+2. Click **Preview prompt** to see the messages the canvas would send.
+3. Switch the canvas on with the **Arm** switch in the canvas header, or right-click the canvas button next to Send.
+4. Send a message as usual.
 
-- **Canvas** with pan, zoom, node drag, wire drawing, right-click menu.
-- **Blocks**: Prompt, SillyTavern prompt, Chat history, Injection, Note, Output.
-- **Compose wires**: `merge` (stays its own message), `append` and `prepend`
-  (folded into the target block's text). Double-click a wire to cycle it.
-- **Reading order is vertical.** A block higher on the canvas enters the prompt
-  earlier. No exceptions.
-- **SillyTavern folder** — your preset's own prompts (Main, Jailbreak, Char
-  Description, World Info, Chat History…) appear in the sidebar and drop onto
-  the canvas as blocks. Read fresh every time, so switching preset or character
-  is reflected immediately. Each can be switched off or overridden *for this
-  canvas only* — your preset is never modified.
-- **Library** — your own prompts in folders, searchable, drag to canvas.
-- **Conditions** per block: always, probability, term search (with regex, scope
-  and any/all/none), chat or global variable, or model name.
-- **Named canvases**, each exportable and importable as JSON. Pin one to a chat
-  (travels in chat metadata), to a character (travels with the card), or set a
-  default. Resolution order: chat > character > default.
-- **Arm switch.** While it is off SillyTavern behaves exactly as it always has.
-  While it is on, the resolved canvas builds the prompt for both chat
-  completion and text completion.
-- **Preview** — the compiled messages, token count, warnings, and a per-block
-  trace saying why each block went in or was skipped.
+Blocks are read from top to bottom. If you want something earlier in the prompt, move its block higher.
 
-### Added after the first round of use
+## Blocks
 
-- **Create on the canvas.** Double-click empty space and a prompt block appears
-  there, focused and ready to type into. It is never saved anywhere until you
-  say so.
-- **Save by dragging.** Drag a block onto a library folder to file it there.
-  The block stays where it was on the canvas: you are filing a copy, not
-  moving the block away.
-- **Prose history.** A Chat history block can render the conversation as
-  continuous paragraphs in one message instead of alternating turns — no
-  roles, no speaker labels unless you ask for them, consecutive turns from one
-  speaker run together, `*action asterisks*` optionally stripped, and framing
-  text above and below. Handed a chat transcript a model reaches for chat-reply
-  habits; handed narrative it continues the narrative.
-- **The canvas you have open is the canvas that runs.** Picking one from the
-  dropdown makes it the active canvas. If a chat or character pin overrides it,
-  the status bar says so in amber and offers one click to unpin and run the one
-  you are looking at.
-- **Library folders stay as you left them**, open or closed, across re-renders.
-- **Hideable panes.** Two header buttons put the library and the inspector away
-  for more canvas. On a narrow window they start hidden and float over the
-  canvas rather than squeezing it.
+| Block | What it does |
+|---|---|
+| **Prompt** | Your own text, with a role (system, user or assistant). SillyTavern macros like `{{char}}` and `{{user}}` work. |
+| **SillyTavern** | One of your preset's prompts, read live from the preset. You can change it for one canvas without touching the preset. |
+| **History** | The chat, as separate turns or as one block of prose. You can limit it to the last few messages. |
+| **Injection** | World Info, Author's Note, summaries and vector memory. |
+| **Generate** | Asks a model something before the reply is written. What is wired into it is the question. Its answer goes on to the blocks below it, and its inputs do not. |
+| **Decider** | Picks one path. Each key has rules, the first key that matches wins, and a fallback catches the rest. Blocks on paths that were not picked are skipped and cost nothing. |
+| **Output** | The final prompt. Everything wired into it is sent. |
+| **Note** | For you. Never sent. |
 
-## The Generate block
+## Wires
 
-A send point. Whatever is wired into its **top** goes to the model; the reply
-goes to whatever is wired to its **bottom**.
+Drag from the bottom edge of a block onto another block.
 
-It has a prompt box of its own, so the question can live in the block rather
-than in a separate block wired into it. That text is sent along with whatever
-is wired in — after it by default, before it if you prefer.
+- **merge**: the block above stays its own message.
+- **append** and **prepend**: its text is joined onto the end or the start of the block it points at.
+- **together** (the lightning dot on a Generate block): sends two Generate blocks at the same time.
 
-It is a barrier: the blocks feeding it stay on its side of the wall. Only its
-reply travels on. So a thinking pass is history wired into a Generate block
-that asks for a plan, and that block wired into Output: the reply gets the
-plan, not the material that produced it.
+Double-click a wire to change its kind.
 
-Two Generate blocks is three calls, readable off the picture without tracing a
-wire. A Generate whose reply nothing uses is never called. One with nothing
-wired in and no text of its own is skipped rather than asked an empty
-question. One that is switched off costs nothing.
+## Generate blocks
 
-Each block picks its own connection profile, so a thinking pass can run on a
-cheap fast model while the reply runs on your good one. The profile carries its
-own API, preset and prompt post-processing, which is what makes the syntax work
-per model.
+A Generate block is a model call inside your prompt. Common uses:
 
-Its reply folds away under the message, under a heading you choose. It is kept
-in the message so it survives a reload, and it is never fed back to the model
-on a later turn.
+- A thinking pass that plans the next scene before the reply is written.
+- A pass that pulls out what each character knows or wants.
+- A second model that checks or rewrites something.
 
-**Dry runs never call a model.** SillyTavern fires those to count tokens.
-Preview shows placeholders where each reply will land.
+Each Generate block can use its own connection profile and model. If you leave it on "same as the chat", it uses whatever model the chat is on at that moment. Thinking is off by default, because reasoning models can spend most of the token budget thinking and leave almost nothing for the answer.
 
-## Parallel sends
+While the blocks run, their answers appear at the bottom of the chat, each one labelled with the block that wrote it. When the reply arrives they fold away under it. Open **What it was asked** on any answer to see the exact messages that block was sent.
 
-Generate blocks that do not feed each other go out at the same time. The
-compiler groups them into **waves**: everything in a wave is independent, so
-the wave goes out at once, and each wave waits for the one before it. Each
-Generate block says which wave it is in and who it goes out with, so the
-picture tells you what the run will do.
+Generate blocks that don't depend on each other are sent at the same time. If your provider refuses that, Silly Canvas switches to one at a time and tells you.
 
-### Tying two blocks together
+## Decider blocks
 
-A **together** tie says "send these two at the same time and wait for both".
-Nothing flows along it — it carries no text, takes no part in the prompt, and
-only decides *when* the blocks leave.
+A Decider looks at what is wired into it and picks a path, without calling a model unless you ask it to. Each key gets its own dot on the block, or you can choose where it goes from the **Goes to** list in the inspector.
 
-Every Generate block has a ⚡ dot on **both** side edges. **Drag either dot
-onto another Generate block** and the two are tied. The tie draws as a dashed line
-side to side rather than top to bottom, because nothing travels along it, and
-both blocks then read "wave 1 · at the same time as ...".
+A key can match on:
 
-Two other ways in, for when your hands are already somewhere else: right-click
-a Generate block and pick "Send at the same time as ...", or select an existing
-wire between two Generate blocks and press "Send these two together instead",
-which drops the text flow and ties them instead.
+- words or phrases that appear, or don't appear
+- a number: word count, how often a word appears, message count, a variable, a dice roll
+- probability
+- time of day and day of the week
+- who spoke last
+- the character or model name
+- a yes or no question put to a model (for example "Does this text read like AI slop?")
 
-**A tie outranks the parallel switch.** Tied blocks go out together even when
-automatic parallel sending is off, and even past the concurrency limit: you
-drew that tie on purpose, and a default should not quietly overrule you. The
-switch governs blocks that merely happen to be independent.
+Keys are checked from top to bottom, and the first match wins. The AI question is only asked if nothing above it has already matched. Or pick **Weighted random** to choose paths by chance.
 
-The canvas says which of the two you are getting. A Generate block reads
-"at the same time as Pacing" when it will go out together, "tied to Pacing"
-when a tie is what did it, and "could go out with Pacing — sending one at a
-time" when the switch is off. The switch itself sits in the canvas status bar
-as **Parallel on / Parallel off**.
-A tie is refused between anything but two Generate blocks, and refused when one
-already feeds the other — a reply cannot arrive before the request that needs
-it.
+## Canvases
 
-Two requests go out at once by default otherwise. Raise or lower it in
-Extensions settings; some providers and proxies refuse concurrent requests.
+You can keep several canvases and choose which one runs:
 
-Parallel sending is real, not theoretical. Measured through SillyTavern to
-OpenRouter: two blocks both started at t=2ms, overlapped for 1.7s, and finished
-in 2.06s against 3.78s of request time — so the second call cost 0.3s of wall
-clock instead of 1.7s.
+- **Pin to this chat**: this chat always uses it.
+- **Pin to character**: saved in the character card, so it goes with the card when you export it.
+- **Make default**: used everywhere else.
 
-**If a block fails in a wave, it is tried again on its own** before being given
-up on, which covers a provider that is fine one request at a time and
-rate-limits the moment you send two. Transient failures (429, 5xx, timeouts)
-are retried once with a short backoff.
+A chat pin beats a character pin, and a character pin beats the default. Hover the button next to Send to see which canvas will run. Canvases can be exported and imported as JSON.
 
-Cost is identical either way; only wall-clock changes.
+## The library
 
-To ask several models the same thing, wire one set of blocks into several
-Generate blocks with different profiles, then wire all of their replies into a
-final Generate that picks or merges.
+Save prompts to the library to reuse them across canvases. Drag a block onto the library panel to save it, or drag a saved prompt onto the canvas to use it.
 
-## Making a Generate block actually work
+## Checking what was sent
 
-A normal SillyTavern send fills in a lot on your behalf. A Generate block goes
-out through a connection profile directly, so two gaps show up as a bare
-"Bad Request" from the provider. Both are handled:
+- **Preview prompt**: what would be sent right now, with a token count and a line for every block saying why it was included or skipped.
+- **What was actually sent**: the last real send.
+- **Test** (on a Generate block): sends that block on its own and shows the reply, the token use and why it stopped.
 
-**Nothing to answer.** A thinking pass is naturally all system messages — a
-system prompt block, a system-role history block, the block's own text. The
-"merge" post-processing squashes those into one system message with no user
-turn, and OpenRouter, Gemini and Claude all reject that. So if nothing in the
-list is a user or assistant turn, the last message is sent as the user turn.
-The text is untouched; only the label changes.
+## Development
 
-**No model.** A profile may deliberately not pin a model so it follows the
-chat. SillyTavern fills that in for a normal send; nothing fills it in here,
-and a chat completion request with no model is rejected. The block now uses the
-chat's current model in that case and says so.
+There is no build step. Edit the files and reload SillyTavern with Ctrl+Shift+R.
 
-**Preview what this sends** shows the exact messages the block would send,
-with the connection, model, token limit and thinking setting, and costs
-nothing. **Test** runs one real request and shows the reply, what it cost,
-how much of that went on thinking, why it stopped, plus anything that had to
-be filled in and anything wrong with the profile —
-a preset the profile names that SillyTavern cannot find, for instance, which
-silently drops every sampler setting. One request, no chat turn spent.
+Tests run with Node. The ones that use a fake page need jsdom (`npm install jsdom`):
 
-## Choosing a model per block
+```
+node tests/decider.test.mjs
+```
 
-A Generate block has its own **Model** field under its connection. Leave it
-alone and the block follows the connection; set it and this block asks that
-model whatever the connection says — a cheap fast model for a thinking pass,
-your good one for the reply.
+To release a new version, run `node tools/bump-version.mjs 0.7.0`. It updates the manifest and the `?v=` on every import, so browsers load the new code instead of a cached copy.
 
-The list comes from whatever SillyTavern already holds for that provider. If
-you work through connection profiles you may never have connected through the
-main UI, so that list can be empty; **Load model list** asks the provider
-directly (the same call SillyTavern's own connection check makes) and keeps the
-answer. There is a free-text box too, for a model the list has not caught up
-with.
+## License
 
-The chosen model shows on the block itself, next to the connection.
-
-## Replies that stop mid-sentence
-
-A reasoning model spends its token budget *thinking* before it writes, and that
-thinking comes out of the same allowance as the answer. Measured on Gemini 3.8
-Flash through OpenRouter with a 500-token limit: 476 tokens of hidden thinking,
-20 left for the reply, `finish_reason: length`, and 79 characters of an answer
-that started mid-sentence. Nothing was truncating it — the budget was gone
-before the answer began.
-
-So a Generate block has **Let the model think first**, and it is **off** by
-default. You are doing the thinking explicitly with the graph; paying the
-provider to do it again in secret, out of the same allowance, is not what a
-sub-call is for. Same prompt with it off: 0 thinking tokens, 3,059 characters.
-
-Providers disagree about how to ask for this. "none" reads like the obvious
-value and is what SillyTavern sends for its own minimum, but Gemini through
-OpenRouter rejects it with a bare Bad Request; "minimal" is accepted and
-measurably works. If a provider refuses the setting anyway, the block asks
-again without it rather than costing you the answer.
-
-When a reply does stop at the limit, the block says which limit and why:
-"672 of its 696 reply tokens went to the model's own hidden thinking", or
-"ran out of room at its token limit (696 tokens)".
-
-## When a call fails
-
-A failed Generate block contributes **nothing**. It does not paste its own
-error message into the prompt you actually send, which is what an earlier
-version did — an unreadable "[Generate failed: API request failed]" would end
-up in front of the model.
-
-Instead: the block adds nothing, the preview and a toast name the block and the
-real reason, and the folded block under the message says it failed and why.
-SillyTavern wraps request errors as "API request failed" with the real cause
-underneath, so the cause chain is unwrapped before it is shown to you.
-
-## Blocks that do nothing
-
-A block wired to nothing that reaches Output contributes nothing. That is easy
-to miss — you wire something up, nothing changes, and there is no error to
-read — so those blocks are drawn dashed on the canvas and named in the
-preview warnings.
-
-## SillyTavern prompts, in the open
-
-Click a SillyTavern block and you see its actual text, not a character count.
-Dynamic ones (World Info, Char Description, Chat History) show what they hold
-right now, with a Refresh button to re-read.
-
-Type in that box and it becomes an edit **on this canvas only** — your preset
-is untouched, and Revert puts it back. If you decide the edit belongs in
-SillyTavern itself, "Write back to preset" does that, and asks first, because
-that one affects every chat.
-
-## Milestone 3 — not built yet
-
-- Token budgeting: this version still does not trim history to fit the
-  context. It warns you instead.
-- Streaming a Generate block's answer as it arrives, rather than waiting.
-- Branching: sending different prompts down different paths on a condition.
-
-## Safety
-
-Every interception is wrapped. If compilation fails for any reason the original
-SillyTavern prompt is left untouched and the failure is reported in the console
-and as a toast. An extension that throws mid-generation is worse than one that
-does nothing.
-
-Built entirely against `SillyTavern.getContext()`. No deep imports into ST
-internals, so updates that move modules around do not break it.
-
-## Usage
-
-**Adding a block** is a drag: pull one in from the Blocks panel under the
-library, or double-click empty canvas for a prompt. Clicking a saved prompt in
-the library opens it for editing in place; dragging it puts it on the canvas.
-
-Open it from the wand menu, from Extensions settings, or with `/canvas`.
-`/canvas arm` and `/canvas off` toggle it without opening the panel.
+MIT. See [LICENSE](LICENSE).

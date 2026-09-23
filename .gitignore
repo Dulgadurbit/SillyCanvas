@@ -4,3 +4,7 @@ Thumbs.db
 *.log
 .vscode/
 .idea/
+
+# Local notes, not published
+HANDOFF.md
+ROADMAP.md
