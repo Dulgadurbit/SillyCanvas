@@ -50,4 +50,31 @@ assert.equal(d.keys.length, 1);
 // preview renders with the decider in it
 await UI.refreshPreview?.();
 await new Promise(r => setTimeout(r, 30));
+
+// "Goes to": wire a key from the inspector, then remove it again
+const target = S.addNode(g, S.NODE_TYPES.PROMPT, 100, 500);
+target.title = 'Deslop';
+chooseBy.value = 'rules'; chooseBy.dispatchEvent(new dom.window.Event('change'));
+const picker = cards()[0].querySelector('.pc-dest select');
+const opt = [...picker.options].find(o => o.textContent === 'Deslop');
+assert.ok(opt, 'blocks listed as destinations');
+picker.value = opt.value; picker.dispatchEvent(new dom.window.Event('change'));
+const w = Object.values(g.wires).find(w => w.from === d.id && w.to === target.id);
+assert.equal(w?.port, d.keys[0].id, 'wired from that key');
+assert.match(cards()[0].querySelector('.pc-dest-chips').textContent, /Deslop/);
+// fallback has its own picker
+const fbPick = cards()[cards().length - 1].querySelector('.pc-dest select');
+const outOpt = [...fbPick.options].find(o => o.textContent.includes('(Output)'));
+fbPick.value = outOpt.value; fbPick.dispatchEvent(new dom.window.Event('change'));
+assert.ok(Object.values(g.wires).some(w => w.from === d.id && w.port === d.fallback.id));
+cards()[0].querySelector('.pc-dest-x').click();
+assert.ok(!Object.values(g.wires).some(w => w.from === d.id && w.to === target.id), 'removed');
+// the new rule kinds render
+const ms = [...cards()[0].querySelectorAll('select')].find(s => [...s.options].some(o => o.value === 'ai'));
+for (const mode of ['lacks', 'number', 'ai']) {
+    const sel = [...cards()[0].querySelectorAll('select')].find(s => [...s.options].some(o => o.value === 'ai'));
+    sel.value = mode; sel.dispatchEvent(new dom.window.Event('change'));
+    assert.equal(d.keys[0].conditions[0].mode, mode);
+}
+assert.ok(cards()[0].textContent.includes('YES or NO'));
 console.log('inspector: ok');

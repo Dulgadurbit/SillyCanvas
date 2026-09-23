@@ -767,3 +767,9 @@
 .pc-key-add, .pc-key-rm { font-size: 0.85em; display: inline-block; margin-top: 2px; }
 .pc-thought-decision { border-left-color: #f0c36a; }
 .pc-thought-decision .pc-thought-arrow { transform: none !important; color: #f0c36a; opacity: 0.9; }
+.pc-dest { margin-bottom: 6px; }
+.pc-dest-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.pc-dest-chip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 10px; background: rgba(240, 195, 106, 0.18); font-size: 0.85em; }
+.pc-dest-x { cursor: pointer; opacity: 0.6; }
+.pc-dest-x:hover { opacity: 1; }
+.pc-dest-none { font-style: italic; }

@@ -328,6 +328,8 @@ export function defaultNode(type, x, y) {
                 suffix: '',
                 showInChat: true,
                 label: 'Notes',
+                /** Send a closing system instruction as the user turn. See shapeForApi(). */
+                instructionAsUser: true,
             };
         case NODE_TYPES.NOTE:
             return { ...base, title: 'Note', content: '', w: 220 };

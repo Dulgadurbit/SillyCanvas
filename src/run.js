@@ -16,8 +16,8 @@
  *    recorded as the error, the run continues, and you see it in the trace.
  */
 
-import { ctx, safe, settings, save as saveSettings, NODE_TYPES, togetherGroup } from './state.js?v=0.4.0';
-import { compile, collect, generateOrder, generateLevels, gatherContext, evaluateCondition, liveNodes, generateDeps } from './compile.js?v=0.4.0';
+import { ctx, safe, settings, save as saveSettings, NODE_TYPES, togetherGroup } from './state.js?v=0.5.0';
+import { compile, collect, generateOrder, generateLevels, gatherContext, evaluateCondition, liveNodes, generateDeps } from './compile.js?v=0.5.0';
 
 /** The connection the chat itself is using, when a block does not name one. */
 function currentProfileId() {
@@ -262,7 +262,7 @@ function extractText(res) {
  *
  * @returns {{messages: Array, note: string|null}}
  */
-export function shapeForApi(messages) {
+export function shapeForApi(messages, node = null) {
     const out = messages
         .filter(m => m && typeof m.content === 'string' && m.content.trim())
         .map(m => ({ ...m }));
@@ -270,7 +270,19 @@ export function shapeForApi(messages) {
     if (!out.length) return { messages: out, note: null };
 
     const hasTurn = out.some(m => m.role === 'user' || m.role === 'assistant');
-    if (hasTurn) return { messages: out, note: null };
+    if (hasTurn) {
+        // A Generate block's task usually comes last, as a system message,
+        // after the chat. Most providers lift every system message to the
+        // top, so the last thing the model actually sees is the chat's final
+        // turn — and it answers the roleplay instead of doing the task.
+        // Sending the task as the closing user turn keeps it the question.
+        const last = out[out.length - 1];
+        if (node && node.instructionAsUser !== false && last.role === 'system') {
+            last.role = 'user';
+            return { messages: out, note: 'the closing instruction was sent as the user turn, so the model answers it rather than the chat' };
+        }
+        return { messages: out, note: null };
+    }
 
     out[out.length - 1].role = 'user';
     return {
@@ -286,7 +298,7 @@ export function shapeForApi(messages) {
  * @param {AbortSignal|null} signal
  */
 async function askModel(rawMessages, node, signal = null) {
-    const { messages, note } = shapeForApi(rawMessages);
+    const { messages, note } = shapeForApi(rawMessages, node);
     if (note) console.log(`[prompt-canvas] "${node.title}": ${note}`);
     if (!messages.length) throw new Error('nothing to send');
 
@@ -490,7 +502,7 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
 
     function record(gen, text, failed, ms, sentMessages, reply = null) {
         // Exactly what went to the model, after shaping, for the inspector.
-        const prompt = safe(() => shapeForApi(sentMessages).messages, sentMessages) ?? [];
+        const prompt = safe(() => shapeForApi(sentMessages, gen).messages, sentMessages) ?? [];
         const at = thoughts.findIndex(t => t.id === gen.id);
         const entry = {
             id: gen.id,
@@ -535,9 +547,21 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
     // Step by step rather than a fixed plan: a Decider can only choose once
     // the text it reads exists, and the path it does not choose must cost
     // nothing. So each round asks what is still needed and what is ready.
+    live.aiAnswers ??= {};
     for (let round = 0; round < 1000; round++) {
         if (signal?.aborted) break;
+        live.aiWanted = new Map();
         const alive = liveNodes(graph, live, results, decisions);
+        // A Decider waiting on an AI rule: ask it, then look again. Only the
+        // rule that is actually needed is asked, never the whole list.
+        const wanted = [...live.aiWanted].filter(([k]) => !live.aiAnswers[k]);
+        if (wanted.length) {
+            await Promise.all(wanted.map(async ([k, w]) => {
+                safe(() => onStage?.({ id: k, title: `${w.dec.title}: asking the AI`, showInChat: false }, done, total));
+                live.aiAnswers[k] = await askYesNo(w.dec, w.cond, w.incoming, signal);
+            }));
+            continue;
+        }
         reportDecisions();
         const waiting = [...alive].map(id => graph.nodes[id]).filter(n =>
             n?.type === NODE_TYPES.GENERATE && n.enabled !== false && results[n.id] === undefined && !skipped.has(n.id));
@@ -612,6 +636,50 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
     return { plan, results, thoughts, failures, cutoffs, rescued, throttled };
 }
 
+/**
+ * One AI rule: show the model the text and ask a yes/no question. Short,
+ * thinking off, and read forgivingly. An answer that is neither counts as NO,
+ * so an unclear model sends you down the safe path rather than nowhere.
+ */
+async function askYesNo(dec, cond, incoming, signal) {
+    const question = String(cond.question ?? '').trim();
+    const pseudo = {
+        id: `${dec.id}-ai`,
+        title: `${dec.title}: ${question.slice(0, 40)}`,
+        type: NODE_TYPES.GENERATE,
+        profileId: cond.profileId || dec.profileId || null,
+        model: cond.model || null,
+        maxTokens: 60,
+        thinking: 'off',
+        instructionAsUser: true,
+    };
+    const messages = [
+        { role: 'system', content: 'You are a strict classifier. Read the text, then answer the question with a single word: YES or NO. No explanation.' },
+        { role: 'user', content: `TEXT:\n<<<\n${incoming || '(empty)'}\n>>>\n\nQUESTION: ${question}\n\nAnswer YES or NO.` },
+    ];
+    const read = (t) => {
+        const words = String(t ?? '').toUpperCase().match(/\b(YES|NO)\b/g) ?? [];
+        if (!words.length) return null;
+        // The last one is its conclusion if it thought out loud anyway.
+        return words[words.length - 1] === 'YES';
+    };
+    const startedAt = Date.now();
+    for (let attempt = 0; attempt < 2; attempt++) {
+        if (signal?.aborted) return { yes: false, unclear: true, text: '' };
+        try {
+            const reply = await askModel(messages, pseudo, signal);
+            const yes = read(reply.text);
+            if (yes !== null) return { yes, unclear: false, text: reply.text, ms: Date.now() - startedAt };
+            messages.push({ role: 'assistant', content: reply.text || '(nothing)' }, { role: 'user', content: 'Answer with only YES or NO.' });
+        } catch (err) {
+            if (signal?.aborted) return { yes: false, unclear: true, text: '' };
+            console.warn(`[prompt-canvas] "${dec.title}" AI rule failed: ${describeError(err)}`);
+            return { yes: false, unclear: true, error: describeError(err), text: '' };
+        }
+    }
+    return { yes: false, unclear: true, text: '' };
+}
+
 /** How many requests go out at once within one wave, unless you change it. */
 const DEFAULT_AT_ONCE = 2;
 
@@ -659,7 +727,7 @@ function batches(graph, wave, size, { autoParallel = true } = {}) {
 export async function testBlock(graph, node, { signal = null } = {}) {
     const live = await gatherContext({ dryRun: true });
     const built = collect(graph, node.id, live, {});
-    const { messages, note } = shapeForApi(built.messages);
+    const { messages, note } = shapeForApi(built.messages, node);
 
     if (!messages.length) {
         return { ok: false, error: 'Nothing is wired into this block and it has no text of its own.', messages: [] };
@@ -687,7 +755,7 @@ export async function testBlock(graph, node, { signal = null } = {}) {
 export async function previewBlock(graph, node) {
     const live = await gatherContext({ dryRun: true });
     const built = collect(graph, node.id, live, {});
-    const { messages, note } = shapeForApi(built.messages);
+    const { messages, note } = shapeForApi(built.messages, node);
     const pid = node.profileId || currentProfileId();
     const info = inspectProfile(pid);
     return {

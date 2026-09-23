@@ -14,11 +14,11 @@ import {
     chatBinding, setChatBinding, characterBinding, setCharacterBinding,
     exportGraph, importGraph, blankGraph, isFolderCollapsed, setFolderCollapsed, togetherGroup,
     newDeciderKey, removeDeciderKey,
-} from './state.js?v=0.4.0';
-import * as L from './library.js?v=0.4.0';
-import { compile, gatherContext, resolveNode, textOf, generateLevels, emissionCounts } from './compile.js?v=0.4.0';
-import { run, profileName, callCount, testBlock, shapeForApi, inspectProfile, modelsForSource, sourceForBlock, cachedModels, fetchModelList, previewBlock } from './run.js?v=0.4.0';
-import { Canvas, WIRE_LABEL, TYPE_LABEL } from './canvas.js?v=0.4.0';
+} from './state.js?v=0.5.0';
+import * as L from './library.js?v=0.5.0';
+import { compile, gatherContext, resolveNode, textOf, generateLevels, emissionCounts } from './compile.js?v=0.5.0';
+import { run, profileName, callCount, testBlock, shapeForApi, inspectProfile, modelsForSource, sourceForBlock, cachedModels, fetchModelList, previewBlock } from './run.js?v=0.5.0';
+import { Canvas, WIRE_LABEL, TYPE_LABEL } from './canvas.js?v=0.5.0';
 
 let root = null;
 let canvas = null;
@@ -1109,6 +1109,9 @@ function renderGenerateFields(box, node) {
         ['before', 'before the wired blocks'],
     ], node.contentPosition ?? 'after', (v) => { node.contentPosition = v; touch(); canvas.render(); })));
 
+    box.append(checkline('Send the last instruction as the user’s turn', node.instructionAsUser !== false, (v) => { node.instructionAsUser = v; touch(); }));
+    box.append(el('div', 'pc-hint', 'On by default. Most providers move system messages to the top, so an instruction placed after the chat as a system message is read before the chat — and the model answers the roleplay instead of the task. This makes the instruction the last thing it is asked.'));
+
     box.append(el('hr', 'pc-rule'));
 
     const max = el('input', 'text_pole');
@@ -1284,8 +1287,10 @@ const BLOCK_RULE_MODES = [
     ['character', 'Character name'],
 ];
 const KEY_RULE_MODES = [
-    ['search', 'Words or phrases'],
-    ['length', 'Length of the text'],
+    ['search', 'Contains words or phrases'],
+    ['lacks', 'Does not contain words or phrases'],
+    ['number', 'Number comparison (math)'],
+    ['ai', 'Ask the AI a yes/no question'],
     ['probability', 'Probability'],
     ['time', 'Time of day'],
     ['chat', 'Chat length / last speaker'],
@@ -1333,7 +1338,7 @@ function renderRuleFields(box, c, { label = 'Rule', modes = BLOCK_RULE_MODES, sc
         box.append(field('Chance (%)', num(c.chance ?? 100, v => { c.chance = v; soft(); }, { min: '0', max: '100' }), 'Rolled fresh on every send.'));
     }
 
-    if (c.mode === 'search') {
+    if (c.mode === 'search' || c.mode === 'lacks') {
         const terms = el('textarea', 'text_pole pc-textarea');
         terms.rows = 4;
         terms.placeholder = 'one word or phrase per line';
@@ -1341,11 +1346,15 @@ function renderRuleFields(box, c, { label = 'Rule', modes = BLOCK_RULE_MODES, sc
         terms.addEventListener('input', () => { c.terms = terms.value; soft(); });
         box.append(field('Words or phrases', terms));
 
-        box.append(field('Match', dropdown([
-            ['any', 'any of them appears'],
-            ['all', 'all of them appear'],
-            ['none', 'none of them appears'],
-        ], c.matchMode ?? 'any', (v) => { c.matchMode = v; soft(); })));
+        if (c.mode === 'search') {
+            box.append(field('Match', dropdown([
+                ['any', 'any of them appears'],
+                ['all', 'all of them appear'],
+                ['none', 'none of them appears'],
+            ], c.matchMode ?? 'any', (v) => { c.matchMode = v; soft(); })));
+        } else {
+            box.append(el('div', 'pc-hint', 'Matches when none of these appears.'));
+        }
 
         box.append(field('Look in', dropdown(scopes, c.scope ?? scopes[0][0], (v) => { c.scope = v; redraw(); })));
 
@@ -1355,6 +1364,48 @@ function renderRuleFields(box, c, { label = 'Rule', modes = BLOCK_RULE_MODES, sc
 
         box.append(checkline('Treat as regular expressions', c.regex, (v) => { c.regex = v; touch(); }));
         box.append(checkline('Case sensitive', c.caseSensitive, (v) => { c.caseSensitive = v; touch(); }));
+    }
+
+    if (c.mode === 'number') {
+        box.append(field('Take this number', dropdown([
+            ['words', 'words in the text coming in'],
+            ['chars', 'characters in the text coming in'],
+            ['found', 'how often some words appear in it'],
+            ['messages', 'messages in the chat'],
+            ['turns', 'your turns in the chat'],
+            ['variable', 'a variable\u2019s value'],
+            ['roll', 'a dice roll, 1 to 100'],
+        ], c.source ?? 'words', (v) => { c.source = v; redraw(); })));
+        if (c.source === 'variable') {
+            box.append(field('Variable name', text(c.name, v => { c.name = v; soft(); })));
+            box.append(field('Scope', dropdown([['local', 'chat variable'], ['global', 'global variable']],
+                c.scope === 'global' ? 'global' : 'local', (v) => { c.scope = v; touch(); })));
+        }
+        if (c.source === 'found') {
+            const terms = el('textarea', 'text_pole pc-textarea');
+            terms.rows = 3;
+            terms.placeholder = 'one word or phrase per line';
+            terms.value = c.terms ?? '';
+            terms.addEventListener('input', () => { c.terms = terms.value; soft(); });
+            box.append(field('Count these', terms));
+        }
+        const row = el('div', 'pc-row');
+        row.append(
+            dropdown([...OPS, ['every', 'a multiple of']], c.op ?? 'gt', (v) => { c.op = v; soft(); }),
+            num(c.value ?? 0, v => { c.value = v; soft(); }),
+        );
+        box.append(field('Matches when it is', row));
+    }
+
+    if (c.mode === 'ai') {
+        const q = el('textarea', 'text_pole pc-textarea');
+        q.rows = 3;
+        q.placeholder = 'Does this text contain clich\u00e9d AI phrasing?';
+        q.value = c.question ?? '';
+        q.addEventListener('input', () => { c.question = q.value; soft(); });
+        box.append(field('Question', q, 'The model is shown the text coming in and asked this, answering only YES or NO. YES matches. It is one small extra model call, made only if no key above has already matched. An unclear answer counts as NO.'));
+        const m = text(c.model, v => { c.model = v || null; touch(); }, 'same model as the chat');
+        box.append(field('Model (optional)', m, 'A small, fast model is plenty for a yes/no question.'));
     }
 
     if (c.mode === 'length') {
@@ -1431,6 +1482,41 @@ function renderRuleFields(box, c, { label = 'Rule', modes = BLOCK_RULE_MODES, sc
 /* Decider                                                             */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Where one key's path goes, chosen from a list, so a key can be wired
+ * without hunting for its dot on the canvas. A key can lead to several blocks.
+ */
+function destinationPicker(node, key) {
+    const wrap = el('div', 'pc-dest');
+    const out = Object.values(current.wires).filter(w => w.from === node.id && w.port === key.id);
+    const chips = el('div', 'pc-dest-chips');
+    for (const w of out) {
+        const target = current.nodes[w.to];
+        const chip = el('span', 'pc-dest-chip', `\u2192 ${target?.title || 'missing block'}`);
+        const x = el('i', 'fa-solid fa-xmark pc-dest-x');
+        x.title = 'Remove this connection';
+        x.addEventListener('click', () => { disconnect(current, w.id); touch(); canvas.render(); renderInspector(); });
+        chip.append(x);
+        chips.append(chip);
+    }
+    if (!out.length) chips.append(el('span', 'pc-hint pc-dest-none', 'goes nowhere yet'));
+
+    const choices = Object.values(current.nodes)
+        .filter(n => n.id !== node.id && n.type !== NODE_TYPES.NOTE && !out.some(w => w.to === n.id))
+        .sort((a, b) => (a.y - b.y) || (a.x - b.x));
+    const sel = el('select', 'pc-select text_pole');
+    sel.append(Object.assign(el('option', '', out.length ? '+ also go to\u2026' : 'Choose a block\u2026'), { value: '' }));
+    for (const n of choices) sel.append(Object.assign(el('option', '', `${n.title || 'Untitled'}${n.type === NODE_TYPES.OUTPUT ? ' (Output)' : ''}`), { value: n.id }));
+    sel.addEventListener('change', () => {
+        if (!sel.value) return;
+        const res = connect(current, node.id, sel.value, WIRE_KINDS.MERGE, { port: key.id });
+        if (!res.ok) toast(res.reason, 'warning');
+        touch(); canvas.render(); renderInspector();
+    });
+    wrap.append(field('Goes to', chips), sel);
+    return wrap;
+}
+
 function renderDeciderFields(box, node) {
     const redraw = () => { touch(); canvas.render(); renderInspector(); };
     node.keys ??= [];
@@ -1465,6 +1551,7 @@ function renderDeciderFields(box, node) {
             tool('fa-trash-can', 'Remove this key and its wires', () => { removeDeciderKey(current, node, k.id); redraw(); }),
         );
         card.append(head);
+        card.append(destinationPicker(node, k));
 
         if (random) {
             const w = el('input', 'text_pole');
@@ -1509,6 +1596,7 @@ function renderDeciderFields(box, node) {
     fbName.value = node.fallback.name ?? 'Otherwise';
     fbName.addEventListener('input', () => { node.fallback.name = fbName.value; touch(); canvas.render(); });
     fb.append(field(random ? 'Fallback key' : 'Fallback — when no key matches', fbName));
+    fb.append(destinationPicker(node, node.fallback));
     if (random) {
         const w = el('input', 'text_pole');
         w.type = 'number'; w.min = '0'; w.value = node.fallback.weight ?? 1;

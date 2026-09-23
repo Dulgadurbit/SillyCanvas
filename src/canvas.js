@@ -13,7 +13,7 @@
 
 import {
     NODE_TYPES, WIRE_KINDS, connect, disconnect, removeNode, touchGraph, wiresInto, deciderKeys,
-} from './state.js?v=0.4.0';
+} from './state.js?v=0.5.0';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -59,6 +59,20 @@ export function ruleLabel(c) {
             : `${c.what === 'turn' ? 'turns' : 'messages'} ${OP[c.op || 'gte']} ${c.value ?? 0}`;
         case 'length': return `input ${OP[c.op || 'gt']} ${c.value ?? 0} ${c.unit === 'chars' ? 'chars' : 'words'}`;
         case 'character': return `character ~ ${c.value || '?'}`;
+        case 'lacks': {
+            const t = terms();
+            if (!t.length) return 'no terms yet';
+            const where = { incoming: 'input', lastUser: 'user msg', lastAssistant: 'last reply', lastN: `last ${c.n || 3}`, chat: 'chat' }[c.scope || 'incoming'] ?? '';
+            return `no ${t.slice(0, 3).map(x => `"${x}"`).join(', ')}${t.length > 3 ? ` +${t.length - 3}` : ''} in ${where}`;
+        }
+        case 'number': {
+            const SRC = { words: 'words', chars: 'chars', found: 'hits', messages: 'messages', turns: 'turns', roll: 'd100', variable: c.name || 'var' };
+            return `${SRC[c.source || 'words'] ?? c.source} ${c.op === 'every' ? 'multiple of' : OP[c.op || 'gt']} ${c.value ?? 0}`;
+        }
+        case 'ai': {
+            const q = String(c.question ?? '').trim();
+            return q ? `AI says yes: "${q.length > 40 ? q.slice(0, 40) + '\u2026' : q}"` : 'no question yet';
+        }
         default: return c.mode;
     }
 }

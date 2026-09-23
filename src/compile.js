@@ -22,8 +22,8 @@
  * no exceptions, because a graph you have to trace to predict is not a tool.
  */
 
-import { ctx, safe, NODE_TYPES, WIRE_KINDS, wiresInto, wiresOutOf, outputNode, togetherGroup, groupWires, deciderKeys } from './state.js?v=0.4.0';
-import { stPrompt, MARKER_SOURCES } from './library.js?v=0.4.0';
+import { ctx, safe, NODE_TYPES, WIRE_KINDS, wiresInto, wiresOutOf, outputNode, togetherGroup, groupWires, deciderKeys } from './state.js?v=0.5.0';
+import { stPrompt, MARKER_SOURCES } from './library.js?v=0.5.0';
 
 /* ------------------------------------------------------------------ */
 /* live context                                                        */
@@ -145,6 +145,40 @@ function compare(a, op, b) {
 }
 const OP_WORD = { gt: 'more than', lt: 'fewer than', gte: 'at least', lte: 'at most', eq: 'exactly', every: 'every' };
 
+/** The number a "number" rule compares, and what to call it. */
+function numberSource(cond, live, extra) {
+    const chat = (live.chat ?? []).filter(m => !m.is_system);
+    const text = String(extra.incoming ?? '');
+    switch (cond.source) {
+        case 'chars': return { value: text.length, label: 'the text coming in, in characters' };
+        case 'messages': return { value: chat.length, label: 'the number of messages' };
+        case 'turns': return { value: chat.filter(m => m.is_user).length, label: 'the number of your turns' };
+        case 'roll': {
+            const v = Math.floor((extra.random ?? Math.random)() * 100) + 1;
+            return { value: v, label: 'a dice roll (1\u2013100)' };
+        }
+        case 'variable': {
+            const c = ctx();
+            const store = cond.scope === 'global' ? c.variables?.global : c.variables?.local;
+            const raw = safe(() => store?.get(cond.name));
+            const v = Number(raw);
+            return { value: raw === undefined || raw === null || raw === '' || Number.isNaN(v) ? null : v, label: `variable ${cond.name || '?'}` };
+        }
+        case 'found': {
+            const found = foundTerms(text, { ...cond, terms: cond.terms });
+            let count = 0;
+            const subject = cond.caseSensitive ? text : text.toLowerCase();
+            for (const t of found) {
+                if (cond.regex) { try { count += (text.match(new RegExp(t, cond.caseSensitive ? 'g' : 'gi')) ?? []).length; } catch { /* skip */ } }
+                else { const needle = cond.caseSensitive ? t : t.toLowerCase(); count += subject.split(needle).length - 1; }
+            }
+            return { value: count, label: 'how often the words appear' };
+        }
+        case 'words':
+        default: return { value: WORDS(text), label: 'the text coming in, in words' };
+    }
+}
+
 /** "22:30" -> minutes past midnight, or null. */
 function clock(t) {
     const m = /^(\d{1,2}):(\d{2})$/.exec(String(t ?? '').trim());
@@ -193,6 +227,23 @@ export function evaluateRule(cond, live, extra = {}) {
             const n = unit === 'chars' ? text.length : WORDS(text);
             const target = Number(cond.value) || 0;
             return { pass: compare(n, cond.op || 'gt', target), why: `${n} ${unit === 'chars' ? 'characters' : 'words'}, wanted ${OP_WORD[cond.op || 'gt']} ${target}` };
+        }
+        case 'lacks': {
+            // "Does not contain": a word search that passes when none is found.
+            const r = evaluateRule({ ...cond, mode: 'search', matchMode: 'none' }, live, extra);
+            return { pass: r.pass, why: r.pass ? r.why.replace(/^no term found/, 'none of the words found') : r.why };
+        }
+        case 'number': {
+            const n = numberSource(cond, live, extra);
+            const target = Number(cond.value) || 0;
+            if (n.value === null) return { pass: false, why: `${n.label} is not a number` };
+            return { pass: compare(n.value, cond.op || 'gt', target), why: `${n.label} is ${n.value}, wanted ${OP_WORD[cond.op || 'gt']} ${target}` };
+        }
+        case 'ai': {
+            const a = extra.ai?.[extra.aiKey?.(cond)];
+            const q = String(cond.question ?? '').trim();
+            if (!a) return { pass: false, why: `AI was not asked "${q}"`, needsAi: true };
+            return { pass: a.yes, why: `AI answered ${a.yes ? 'YES' : 'NO'} to "${q.slice(0, 80)}"${a.unclear ? ' (its answer was unclear, so treated as NO)' : ''}` };
         }
         case 'character': {
             const name = String(live.name2 ?? '');
@@ -259,7 +310,10 @@ export function evaluateRule(cond, live, extra = {}) {
 
 /** A search rule with no terms would match everything; in a key that is never meant. */
 function emptyRule(cond) {
-    return cond?.mode === 'search' && !String(cond.terms ?? '').trim();
+    if (cond?.mode === 'search' || cond?.mode === 'lacks') return !String(cond.terms ?? '').trim();
+    if (cond?.mode === 'ai') return !String(cond.question ?? '').trim();
+    if (cond?.mode === 'number' && cond.source === 'found') return !String(cond.terms ?? '').trim();
+    return false;
 }
 
 /**
@@ -293,9 +347,18 @@ export function evaluateDecider(node, live, incoming, extra = {}) {
     for (const k of keys) {
         const rules = (k.conditions ?? []).filter(c => c && !emptyRule(c));
         if (!rules.length) continue;
-        const results = rules.map(c => evaluateRule(c, live, { ...extra, incoming }));
         const all = k.match === 'all';
-        const ok = all ? results.every(r => r.pass) : results.some(r => r.pass);
+        // Checked in order and stopped as soon as the answer is known, so an
+        // AI rule is only ever asked when nothing before it has settled things.
+        const results = [];
+        let ok = all;
+        for (const c of rules) {
+            const r = evaluateRule(c, live, { ...extra, incoming });
+            if (r.needsAi) return { needs: c, key: null };
+            results.push(r);
+            if (all && !r.pass) { ok = false; break; }
+            if (!all && r.pass) { ok = true; break; }
+        }
         if (!ok) continue;
         const why = all
             ? results.map(r => r.why).join('; ')
@@ -543,6 +606,8 @@ export function collect(graph, targetId, live, results = {}, decisions = {}) {
     const pending = [];
     const memo = new Map();
     const seenTwice = new Set();
+    /** Where each block's text sits in reading order, for sorting the trace to match. */
+    const keyOf = new Map();
 
     /**
      * The path a Decider takes, deciding it now if it has not been. It can
@@ -597,7 +662,8 @@ export function collect(graph, targetId, live, results = {}, decisions = {}) {
                 memo.set(nodeId, []);
                 return [];
             }
-            const out = generateOutput(node, results, live);
+            const out = generateOutput(node, results, live).map(m => ({ ...m, __y: node.y }));
+            keyOf.set(nodeId, node.y);
             if (results?.[node.id] === undefined) pending.push(node.id);
             trace.push({
                 id: nodeId,
@@ -686,8 +752,22 @@ export function collect(graph, targetId, live, results = {}, decisions = {}) {
 
         if (entry && !ownFirstTrace) trace.push(entry);
 
+        // Reading order is vertical, all the way down. Every message keeps the
+        // height of the block it came from, so the System Prompt at the top of
+        // the canvas goes first even when it arrives through a block further
+        // down. The one constraint: a block's own text is read after what is
+        // wired into it, so its place is never above its own inputs.
+        const inputs = before.map(m => ({ ...m, __y: m.__y ?? graph.nodes[nodeId]?.y ?? 0 }));
+        const lo = inputs.length ? Math.min(...inputs.map(m => m.__y)) : node.y;
+        const hi = inputs.length ? Math.max(...inputs.map(m => m.__y)) : node.y;
         const ownFirst = ownFirstTrace;
-        const result = ownFirst ? [...own, ...before] : [...before, ...own];
+        const ownY = ownFirst ? Math.min(node.y, lo) - 0.001 : Math.max(node.y, hi) + 0.001;
+        keyOf.set(nodeId, ownY);
+        const mine = own.map(m => ({ ...m, __y: ownY }));
+        const result = [...(ownFirst ? mine : []), ...inputs, ...(ownFirst ? [] : mine)]
+            .map((m, i) => ({ m, i }))
+            .sort((a, b) => (a.m.__y - b.m.__y) || (a.i - b.i))
+            .map(x => x.m);
         memo.set(nodeId, structuredClone(result));
         return result;
     }
@@ -695,6 +775,10 @@ export function collect(graph, targetId, live, results = {}, decisions = {}) {
     const messages = contribute(targetId, true)
         .filter(m => m && typeof m.content === 'string' && m.content.trim().length)
         .map(m => ({ role: m.role || 'system', content: m.content, ...(m.name ? { name: m.name } : {}) }));
+
+    // The trace reads in the same order as the prompt.
+    const tk = (t) => keyOf.get(t.id) ?? graph.nodes[t.id]?.y ?? 0;
+    trace.splice(0, trace.length, ...trace.map((t, i) => ({ t, i })).sort((a, b) => (tk(a.t) - tk(b.t)) || (a.i - b.i)).map(x => x.t));
 
     for (const id of seenTwice) {
         const n = graph.nodes[id];
@@ -721,16 +805,33 @@ export function tryDecide(graph, dec, live, results = {}, decisions = {}) {
         if (inner.pending.length) return null;
         incoming = textOf(inner.messages);
     }
-    const d = { ...evaluateDecider(dec, live, incoming), title: dec.title };
+    const r = evaluateDecider(dec, live, incoming, { ai: live.aiAnswers ?? {}, aiKey: (c) => aiRuleKey(dec, c) });
+    if (r.needs) {
+        // An AI rule has to be asked before this can be decided. The runner
+        // asks it and tries again; a preview never asks, so it stays open.
+        (live.aiWanted ??= new Map()).set(aiRuleKey(dec, r.needs), { dec, cond: r.needs, incoming });
+        return null;
+    }
+    const d = { ...r, title: dec.title };
     decisions[dec.id] = d;
     return d;
+}
+
+/** A stable name for one AI rule's answer within one send. */
+export function aiRuleKey(dec, cond) {
+    const k = (dec.keys ?? []).find(k => (k.conditions ?? []).includes(cond));
+    const i = k ? k.conditions.indexOf(cond) : -1;
+    return `${dec.id}|${k?.id ?? '?'}|${i}`;
 }
 
 /** Whether any of a Decider's rules read the text wired into it. */
 export function readsIncoming(dec) {
     if (dec.enabled === false || dec.mode === 'random') return false;
     return (dec.keys ?? []).some(k => (k.conditions ?? []).some(c =>
-        c && !emptyRule(c) && ((c.mode === 'search' && c.scope === 'incoming') || c.mode === 'length')));
+        c && !emptyRule(c) && (
+            ((c.mode === 'search' || c.mode === 'lacks') && c.scope === 'incoming')
+            || c.mode === 'length' || c.mode === 'ai'
+            || (c.mode === 'number' && ['words', 'chars', 'found', undefined].includes(c.source)))));
 }
 
 /**
