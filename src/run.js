@@ -16,8 +16,8 @@
  *    recorded as the error, the run continues, and you see it in the trace.
  */
 
-import { ctx, safe, settings, save as saveSettings, NODE_TYPES, togetherGroup } from './state.js?v=0.3.0';
-import { compile, collect, generateOrder, generateLevels, gatherContext, evaluateCondition } from './compile.js?v=0.3.0';
+import { ctx, safe, settings, save as saveSettings, NODE_TYPES, togetherGroup } from './state.js?v=0.4.0';
+import { compile, collect, generateOrder, generateLevels, gatherContext, evaluateCondition, liveNodes, generateDeps } from './compile.js?v=0.4.0';
 
 /** The connection the chat itself is using, when a block does not name one. */
 function currentProfileId() {
@@ -431,9 +431,12 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
     // provider refuses that, the fallback below drops the limit to one.
     const parallel = true;
     const atOnce = Math.max(1, Number(safe(() => settings().concurrency)) || DEFAULT_AT_ONCE);
-    const waves = generateLevels(graph);
-    const total = waves.reduce((n, w) => n + w.length, 0);
+    const total = generateOrder(graph).length;
     let done = 0;
+    /** Decider choices for this send, made once each, as soon as they can be. */
+    const decisions = {};
+    /** Generate blocks that turned out to have nothing to do. */
+    const skipped = new Set();
 
     /**
      * Ask one Generate block its question.
@@ -441,10 +444,16 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
      */
     async function ask(gen, { retries = 1 } = {}) {
         if (signal?.aborted) return { node: gen, ok: false, aborted: true, error: 'stopped' };
-        if (!evaluateCondition(gen, live).pass) return null;
+        if (!evaluateCondition(gen, live).pass) { skipped.add(gen.id); return null; }
 
-        const built = collect(graph, gen.id, live, results);
-        if (!built.messages.length) return null;
+        const built = collect(graph, gen.id, live, results, decisions);
+        if (!built.messages.length) {
+            // Nothing to ask. It contributes nothing, rather than leaving a
+            // placeholder where its answer would have gone.
+            results[gen.id] = '';
+            skipped.add(gen.id);
+            return null;
+        }
 
         onStage?.(gen, done++, total);
         const startedAt = Date.now();
@@ -502,8 +511,45 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
         safe(() => onResult?.(entry));
     }
 
-    for (const wave of waves) {
+    const reported = new Set();
+    const reportDecisions = () => {
+        for (const [id, d] of Object.entries(decisions)) {
+            if (reported.has(id)) continue;
+            reported.add(id);
+            const node = graph.nodes[id];
+            const entry = {
+                id,
+                title: node?.title ?? d.title ?? 'Decider',
+                label: `${node?.title ?? 'Decider'} \u2192 ${d.name}`,
+                text: d.why,
+                decision: d.key,
+                failed: null,
+                ms: 0,
+                show: node?.showInChat !== false,
+            };
+            thoughts.push(entry);
+            safe(() => onResult?.(entry));
+        }
+    };
+
+    // Step by step rather than a fixed plan: a Decider can only choose once
+    // the text it reads exists, and the path it does not choose must cost
+    // nothing. So each round asks what is still needed and what is ready.
+    for (let round = 0; round < 1000; round++) {
         if (signal?.aborted) break;
+        const alive = liveNodes(graph, live, results, decisions);
+        reportDecisions();
+        const waiting = [...alive].map(id => graph.nodes[id]).filter(n =>
+            n?.type === NODE_TYPES.GENERATE && n.enabled !== false && results[n.id] === undefined && !skipped.has(n.id));
+        if (!waiting.length) break;
+        const settled = (id) => results[id] !== undefined || skipped.has(id) || !alive.has(id) || graph.nodes[id]?.enabled === false;
+        let wave = waiting.filter(g => [...generateDeps(graph, g.id)].every(settled));
+        // A tie waits for its partners, so tied blocks leave together.
+        const held = wave.filter(g => [...togetherGroup(graph, g.id)].some(id =>
+            id !== g.id && waiting.some(w => w.id === id) && !wave.some(w => w.id === id)));
+        if (held.length && held.length < wave.length) wave = wave.filter(g => !held.includes(g));
+        if (!wave.length) break;
+
         // A tie is something you drew on purpose, so it goes out together even
         // when automatic parallel sending is switched off. The global toggle
         // governs blocks that merely happen to be independent.
@@ -543,11 +589,13 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
         return { plan: { ok: false, quiet: true, reason: 'Stopped before the send.', stages: [], messages: [], warnings: [], trace: [], tokens: 0 }, results, thoughts, failures, cutoffs, aborted: true };
     }
 
-    // Keep the answers in canvas order regardless of which finished first.
-    const order = generateOrder(graph).map(n => n.id);
-    thoughts.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+    reportDecisions();
 
-    const plan = await compile(graph, { dryRun, live, results });
+    // Keep the answers in canvas order regardless of which finished first.
+    const pos = (id) => graph.nodes[id] ?? { y: 1e9, x: 1e9 };
+    thoughts.sort((a, b) => (pos(a.id).y - pos(b.id).y) || (pos(a.id).x - pos(b.id).x));
+
+    const plan = await compile(graph, { dryRun, live, results, decisions });
     for (const f of failures) {
         plan.warnings.push(`"${f.title}" failed, so it added nothing to this prompt: ${f.error}`);
     }

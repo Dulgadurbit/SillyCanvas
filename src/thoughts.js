@@ -11,7 +11,7 @@
  * later turn — only the canvas decides what gets sent.
  */
 
-import { ctx, safe } from './state.js?v=0.3.0';
+import { ctx, safe } from './state.js?v=0.4.0';
 
 const KEY = 'promptCanvas';
 
@@ -44,6 +44,7 @@ export function attachThoughts(messageId, thoughts) {
             model: t.model ?? null,
             usage: t.usage ?? null,
             finish: t.finish ?? null,
+            decision: t.decision ?? null,
         })),
     };
     safe(() => c.saveChat());
@@ -101,7 +102,7 @@ export function clearThoughts(messageId) {
  */
 function thoughtElement(t, { open = false, pending = false, prompt = t.prompt ?? null } = {}) {
     const details = document.createElement('details');
-    details.className = `pc-thought${t.failed ? ' pc-thought-failed' : ''}${pending ? ' pc-thought-pending' : ''}`;
+    details.className = `pc-thought${t.failed ? ' pc-thought-failed' : ''}${pending ? ' pc-thought-pending' : ''}${t.decision ? ' pc-thought-decision' : ''}`;
     details.open = open;
 
     const summary = document.createElement('summary');
@@ -128,7 +129,9 @@ function thoughtElement(t, { open = false, pending = false, prompt = t.prompt ??
     meta.textContent = bits.join(' · ');
 
     const arrow = document.createElement('i');
-    arrow.className = pending ? 'fa-solid fa-spinner fa-spin pc-thought-arrow' : 'fa-solid fa-chevron-right pc-thought-arrow';
+    arrow.className = pending ? 'fa-solid fa-spinner fa-spin pc-thought-arrow'
+        : t.decision ? 'fa-solid fa-code-fork pc-thought-arrow'
+        : 'fa-solid fa-chevron-right pc-thought-arrow';
     summary.append(arrow, label, meta);
 
     const body = document.createElement('div');

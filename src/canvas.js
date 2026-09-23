@@ -12,8 +12,8 @@
  */
 
 import {
-    NODE_TYPES, WIRE_KINDS, connect, disconnect, removeNode, touchGraph, wiresInto,
-} from './state.js?v=0.3.0';
+    NODE_TYPES, WIRE_KINDS, connect, disconnect, removeNode, touchGraph, wiresInto, deciderKeys,
+} from './state.js?v=0.4.0';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -34,7 +34,34 @@ const TYPE_LABEL = {
     [NODE_TYPES.GENERATE]: 'Generate',
     [NODE_TYPES.OUTPUT]: 'Output',
     [NODE_TYPES.NOTE]: 'Note',
+    [NODE_TYPES.DECIDER]: 'Decider',
 };
+
+/** One rule, in a few words, for the face of a block. */
+export function ruleLabel(c) {
+    if (!c) return '';
+    const OP = { gt: '>', lt: '<', gte: '\u2265', lte: '\u2264', eq: '=', every: 'every' };
+    const terms = () => String(c.terms || '').split('\n').map(t => t.trim()).filter(Boolean);
+    switch (c.mode) {
+        case 'probability': return `${c.chance ?? 100}% of the time`;
+        case 'search': {
+            const t = terms();
+            const where = { incoming: 'input', lastUser: 'user msg', lastAssistant: 'last reply', lastN: `last ${c.n || 3}`, chat: 'chat' }[c.scope || 'lastUser'] ?? '';
+            if (!t.length) return 'no terms yet';
+            const shown = t.slice(0, 3).map(x => `"${x}"`).join(', ') + (t.length > 3 ? ` +${t.length - 3}` : '');
+            return `${c.matchMode === 'none' ? 'no' : c.matchMode === 'all' ? 'all of' : ''} ${shown} in ${where}`.trim();
+        }
+        case 'variable': return `${c.name || 'var'} ${c.op || 'eq'} ${c.value ?? ''}`;
+        case 'model': return `model ~ ${c.value || '?'}`;
+        case 'time': return `${c.from || '?'}\u2013${c.to || '?'}${Array.isArray(c.days) && c.days.length ? ' on some days' : ''}`;
+        case 'chat': return c.what === 'lastSpeaker'
+            ? `last speaker: ${c.value || 'user'}`
+            : `${c.what === 'turn' ? 'turns' : 'messages'} ${OP[c.op || 'gte']} ${c.value ?? 0}`;
+        case 'length': return `input ${OP[c.op || 'gt']} ${c.value ?? 0} ${c.unit === 'chars' ? 'chars' : 'words'}`;
+        case 'character': return `character ~ ${c.value || '?'}`;
+        default: return c.mode;
+    }
+}
 
 export class Canvas {
     /**
@@ -234,7 +261,27 @@ export class Canvas {
 
         el.append(head, body);
 
-        if (node.condition && node.condition.mode !== 'always') {
+        if (node.type === NODE_TYPES.DECIDER) {
+            body.remove();
+            const list = document.createElement('div');
+            list.className = 'pc-dec-keys';
+            const chosen = this.trace?.get(node.id)?.decision ?? null;
+            const keys = deciderKeys(node);
+            if (node.mode === 'random') {
+                const total = keys.reduce((n, k) => n + Math.max(0, Number(k.weight ?? 1)), 0) || 1;
+                for (const k of keys) list.append(this.#keyRow(k, `${Math.round(100 * Math.max(0, Number(k.weight ?? 1)) / total)}%`, k.id === chosen));
+            } else {
+                for (const k of node.keys ?? []) {
+                    const rules = (k.conditions ?? []).map(ruleLabel).filter(Boolean);
+                    const join = k.match === 'all' ? ' and ' : ' or ';
+                    list.append(this.#keyRow(k, rules.length ? `if ${rules.join(join)}` : 'no rules yet', k.id === chosen));
+                }
+                if (node.fallback) list.append(this.#keyRow(node.fallback, 'when nothing above matches', node.fallback.id === chosen, true));
+            }
+            el.append(list);
+        }
+
+        if (node.type !== NODE_TYPES.DECIDER && node.condition && node.condition.mode !== 'always') {
             const cond = document.createElement('div');
             cond.className = 'pc-node-cond';
             cond.innerHTML = `<i class="fa-solid fa-code-branch"></i> ${this.#conditionLabel(node.condition)}`;
@@ -289,8 +336,27 @@ export class Canvas {
             el.append(badge);
         }
 
+        if (node.type === NODE_TYPES.DECIDER) {
+            const keys = deciderKeys(node);
+            const chosen = this.trace?.get(node.id)?.decision ?? null;
+            keys.forEach((k, i) => {
+                const port = document.createElement('div');
+                port.className = `pc-port pc-port-out pc-port-key${k.id === chosen ? ' pc-port-chosen' : ''}${k === node.fallback ? ' pc-port-fallback' : ''}`;
+                port.dataset.node = node.id;
+                port.dataset.dir = 'out';
+                port.dataset.port = k.id;
+                port.style.left = `${100 * (i + 1) / (keys.length + 1)}%`;
+                port.title = `Drag to wire the "${k.name}" path`;
+                const tag = document.createElement('span');
+                tag.className = 'pc-port-keyname';
+                tag.textContent = k.name || 'key';
+                port.append(tag);
+                el.append(port);
+            });
+        }
+
         if (node.type !== NODE_TYPES.NOTE) {
-            if (node.type !== NODE_TYPES.OUTPUT) {
+            if (node.type !== NODE_TYPES.OUTPUT && node.type !== NODE_TYPES.DECIDER) {
                 const outPort = document.createElement('div');
                 outPort.className = 'pc-port pc-port-out';
                 outPort.dataset.node = node.id;
@@ -339,13 +405,7 @@ export class Canvas {
     }
 
     #conditionLabel(c) {
-        switch (c.mode) {
-            case 'probability': return `${c.chance ?? 100}% of the time`;
-            case 'search': return `${c.mode === 'none' ? 'unless' : 'if'} text matches`;
-            case 'variable': return `if ${c.name || 'var'} ${c.op || 'eq'} ${c.value ?? ''}`;
-            case 'model': return `if model ~ ${c.value || '?'}`;
-            default: return c.mode;
-        }
+        return c.mode === 'probability' ? ruleLabel(c) : `if ${ruleLabel(c)}`;
     }
 
     #preview(node) {
@@ -378,6 +438,8 @@ export class Canvas {
                 return node.content || '';
             case NODE_TYPES.OUTPUT:
                 return 'Everything wired here is sent, top to bottom.';
+            case NODE_TYPES.DECIDER:
+                return '';
             default:
                 return '';
         }
@@ -407,23 +469,53 @@ export class Canvas {
             if (link.dir === 'tie' && n.type !== NODE_TYPES.GENERATE) continue;
             const q = link.dir === 'tie'
                 ? this.#sidePos(n.id, p.x < n.x + (n.w || 260) / 2 ? 'left' : 'right')
-                : this.#portPos(n.id, link.dir === 'out' ? 'in' : 'out');
+                : link.dir === 'in' && n.type === NODE_TYPES.DECIDER
+                    ? this.#portPos(n.id, 'out', this.#nearestKey(n.id, p))
+                    : this.#portPos(n.id, link.dir === 'out' ? 'in' : 'out');
             const d = Math.hypot(q.x - p.x, q.y - p.y);
             if (d < bestD) { bestD = d; best = n.id; }
         }
         return best;
     }
 
-    /** Port centre in graph coordinates. */
-    #portPos(nodeId, dir) {
+    #keyRow(k, rule, chosen, fallback = false) {
+        const row = document.createElement('div');
+        row.className = `pc-dec-key${chosen ? ' pc-dec-chosen' : ''}${fallback ? ' pc-dec-fallback' : ''}`;
+        const name = document.createElement('b');
+        name.textContent = k.name || 'key';
+        const why = document.createElement('span');
+        why.textContent = rule;
+        row.append(name, why);
+        return row;
+    }
+
+    /** Port centre in graph coordinates. A Decider has one out port per key. */
+    #portPos(nodeId, dir, portId = null) {
         const el = this.nodeLayer.querySelector(`.pc-node[data-id="${CSS.escape(nodeId)}"]`);
         const node = this.graph.nodes[nodeId];
         if (!node) return { x: 0, y: 0 };
         const w = node.w || 260;
         const h = el ? el.offsetHeight : 90;
+        if (dir === 'out' && node.type === NODE_TYPES.DECIDER) {
+            const keys = deciderKeys(node);
+            const i = Math.max(0, keys.findIndex(k => k.id === portId));
+            return { x: node.x + w * (i + 1) / (keys.length + 1), y: node.y + h };
+        }
         return dir === 'out'
             ? { x: node.x + w / 2, y: node.y + h }
             : { x: node.x + w / 2, y: node.y };
+    }
+
+    /** The Decider key whose port is nearest a point, for a drop that did not name one. */
+    #nearestKey(nodeId, p) {
+        const node = this.graph.nodes[nodeId];
+        let best = null, bestD = Infinity;
+        for (const k of deciderKeys(node)) {
+            const q = this.#portPos(nodeId, 'out', k.id);
+            const d = Math.abs(q.x - p.x);
+            if (d < bestD) { bestD = d; best = k.id; }
+        }
+        return best;
     }
 
     /** Middle of a node's left or right edge, in graph coordinates. */
@@ -469,7 +561,7 @@ export class Canvas {
                 && this.graph.nodes[wire.from].x <= this.graph.nodes[wire.to].x;
             const from = tie
                 ? this.#sidePos(left ? wire.from : wire.to, 'right')
-                : this.#portPos(wire.from, 'out');
+                : this.#portPos(wire.from, 'out', wire.port ?? null);
             const to = tie
                 ? this.#sidePos(left ? wire.to : wire.from, 'left')
                 : this.#portPos(wire.to, 'in');
@@ -482,13 +574,19 @@ export class Canvas {
 
             const path = document.createElementNS(SVG_NS, 'path');
             path.setAttribute('d', d);
-            path.setAttribute('class', `pc-wire pc-wire-${wire.kind}${this.selection?.kind === 'wire' && this.selection.id === wire.id ? ' pc-selected' : ''}`);
+            const srcNode = this.graph.nodes[wire.from];
+            const isKey = srcNode?.type === NODE_TYPES.DECIDER;
+            const chosen = isKey ? this.trace?.get(wire.from)?.decision : undefined;
+            const untaken = isKey && chosen !== undefined && chosen !== null && chosen !== wire.port;
+            path.setAttribute('class', `pc-wire pc-wire-${wire.kind}${isKey ? ' pc-wire-key' : ''}${untaken ? ' pc-wire-untaken' : ''}${this.selection?.kind === 'wire' && this.selection.id === wire.id ? ' pc-selected' : ''}`);
 
             const label = document.createElementNS(SVG_NS, 'text');
             label.setAttribute('class', 'pc-wire-label');
             label.setAttribute('x', (from.x + to.x) / 2);
             label.setAttribute('y', (from.y + to.y) / 2);
-            label.textContent = tie ? TOGETHER_LABEL : (WIRE_LABEL[wire.kind] ?? wire.kind);
+            label.textContent = tie ? TOGETHER_LABEL
+                : isKey ? (deciderKeys(srcNode).find(k => k.id === wire.port)?.name ?? 'key')
+                : (WIRE_LABEL[wire.kind] ?? wire.kind);
 
             this.svg.append(hit, path, label);
         }
@@ -527,12 +625,17 @@ export class Canvas {
                 e.stopPropagation();
                 const dir = port.dataset.dir;
                 const nodeId = port.dataset.node;
+                let key = port.dataset.port ?? null;
+                if (dir === 'out' && !key && this.graph.nodes[nodeId]?.type === NODE_TYPES.DECIDER) {
+                    key = this.#nearestKey(nodeId, this.toGraph(e.clientX, e.clientY));
+                }
                 this.linking = {
                     dir,
                     nodeId,
+                    port: key,
                     from: dir === 'tie'
                         ? this.#sidePos(nodeId, port.dataset.side === 'left' ? 'left' : 'right')
-                        : this.#portPos(nodeId, dir),
+                        : this.#portPos(nodeId, dir, key),
                     ghost: this.toGraph(e.clientX, e.clientY),
                 };
                 this.host.classList.toggle('pc-tying', dir === 'tie');
@@ -625,7 +728,12 @@ export class Canvas {
                     const tie = link.dir === 'tie';
                     const fromId = (tie || link.dir === 'out') ? link.nodeId : targetId;
                     const toId = (tie || link.dir === 'out') ? targetId : link.nodeId;
-                    const res = connect(this.graph, fromId, toId, tie ? WIRE_KINDS.TOGETHER : WIRE_KINDS.MERGE);
+                    let port = link.dir === 'out' ? link.port : null;
+                    if (link.dir === 'in' && this.graph.nodes[fromId]?.type === NODE_TYPES.DECIDER) {
+                        // Dragged up from a block onto a Decider: use the key nearest where it landed.
+                        port = this.#nearestKey(fromId, this.toGraph(e.clientX, e.clientY));
+                    }
+                    const res = connect(this.graph, fromId, toId, tie ? WIRE_KINDS.TOGETHER : WIRE_KINDS.MERGE, { port });
                     if (!res.ok) this.hooks.onToast?.(res.reason);
                     else this.hooks.onChange?.();
                 }

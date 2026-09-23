@@ -42,7 +42,31 @@ export const NODE_TYPES = {
 
     OUTPUT: 'output',
     NOTE: 'note',
+    /**
+     * Picks one path for what is wired into it. Each key is an outgoing port;
+     * the first key whose rules match wins, and the fallback key takes
+     * everything else. What comes in passes through unchanged down the chosen
+     * port only. Paths not taken contribute nothing and cost nothing.
+     */
+    DECIDER: 'decider',
 };
+
+/** A fresh key for a Decider. */
+export function newDeciderKey(name = 'KEY') {
+    return {
+        id: uid('k'),
+        name,
+        match: 'any',
+        conditions: [{ mode: 'search', scope: 'incoming', terms: '', matchMode: 'any' }],
+        weight: 1,
+    };
+}
+
+/** Every key of a Decider, fallback last. */
+export function deciderKeys(node) {
+    if (!node || node.type !== NODE_TYPES.DECIDER) return [];
+    return [...(node.keys ?? []), node.fallback].filter(Boolean);
+}
 
 export const WIRE_KINDS = {
     APPEND: 'append',
@@ -307,6 +331,17 @@ export function defaultNode(type, x, y) {
             };
         case NODE_TYPES.NOTE:
             return { ...base, title: 'Note', content: '', w: 220 };
+        case NODE_TYPES.DECIDER:
+            return {
+                ...base,
+                title: 'Decider',
+                w: 280,
+                /** 'rules': first key whose conditions match. 'random': weighted pick. */
+                mode: 'rules',
+                keys: [newDeciderKey('MATCH')],
+                fallback: { id: uid('k'), name: 'Otherwise', weight: 1 },
+                showInChat: true,
+            };
         case NODE_TYPES.OUTPUT:
         default:
             return { ...base, type: NODE_TYPES.OUTPUT, title: 'Output', w: 260 };
@@ -339,7 +374,7 @@ export function outputNode(graph) {
  * Connect two nodes. Refuses self-links, duplicates and cycles, because a
  * cycle in a prompt graph is not a clever loop, it is an infinite prompt.
  */
-export function connect(graph, fromId, toId, kind = WIRE_KINDS.APPEND) {
+export function connect(graph, fromId, toId, kind = WIRE_KINDS.APPEND, { port = null } = {}) {
     if (fromId === toId) return { ok: false, reason: 'A block cannot wire to itself.' };
     if (!graph.nodes[fromId] || !graph.nodes[toId]) return { ok: false, reason: 'Missing block.' };
 
@@ -349,11 +384,18 @@ export function connect(graph, fromId, toId, kind = WIRE_KINDS.APPEND) {
     if (graph.nodes[fromId].type === NODE_TYPES.NOTE || graph.nodes[toId].type === NODE_TYPES.NOTE) {
         return { ok: false, reason: 'Notes are for you, not for the model.' };
     }
+    const src = graph.nodes[fromId];
+    if (src.type === NODE_TYPES.DECIDER) {
+        const key = deciderKeys(src).find(k => k.id === port);
+        if (!key) return { ok: false, reason: 'Drag from one of the Decider\u2019s keys, so it knows which path this is.' };
+    } else {
+        port = null;
+    }
     const exists = Object.values(graph.wires).some(w =>
-        w.kind !== WIRE_KINDS.TOGETHER && w.from === fromId && w.to === toId);
+        w.kind !== WIRE_KINDS.TOGETHER && w.from === fromId && w.to === toId && (w.port ?? null) === port);
     if (exists) return { ok: false, reason: 'Those blocks are already wired.' };
     if (wouldCycle(graph, fromId, toId)) return { ok: false, reason: 'That would make a loop.' };
-    const wire = { id: uid('w'), from: fromId, to: toId, kind };
+    const wire = { id: uid('w'), from: fromId, to: toId, kind, ...(port ? { port } : {}) };
     graph.wires[wire.id] = wire;
     touchGraph(graph);
     return { ok: true, wire };
@@ -497,4 +539,17 @@ export function setFolderCollapsed(key, collapsed) {
     if (collapsed && at === -1) list.push(key);
     if (!collapsed && at !== -1) list.splice(at, 1);
     save();
+}
+
+/** Remove a Decider key and every wire leaving from it. The fallback stays. */
+export function removeDeciderKey(graph, node, keyId) {
+    if (!node?.keys) return false;
+    const at = node.keys.findIndex(k => k.id === keyId);
+    if (at === -1) return false;
+    node.keys.splice(at, 1);
+    for (const [wid, w] of Object.entries(graph.wires)) {
+        if (w.from === node.id && w.port === keyId) delete graph.wires[wid];
+    }
+    touchGraph(graph);
+    return true;
 }

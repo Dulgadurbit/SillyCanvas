@@ -13,11 +13,12 @@ import {
     addNode, removeNode, outputNode, connect, disconnect, resolveGraph,
     chatBinding, setChatBinding, characterBinding, setCharacterBinding,
     exportGraph, importGraph, blankGraph, isFolderCollapsed, setFolderCollapsed, togetherGroup,
-} from './state.js?v=0.3.0';
-import * as L from './library.js?v=0.3.0';
-import { compile, gatherContext, resolveNode, textOf, generateLevels, emissionCounts } from './compile.js?v=0.3.0';
-import { run, profileName, callCount, testBlock, shapeForApi, inspectProfile, modelsForSource, sourceForBlock, cachedModels, fetchModelList, previewBlock } from './run.js?v=0.3.0';
-import { Canvas, WIRE_LABEL, TYPE_LABEL } from './canvas.js?v=0.3.0';
+    newDeciderKey, removeDeciderKey,
+} from './state.js?v=0.4.0';
+import * as L from './library.js?v=0.4.0';
+import { compile, gatherContext, resolveNode, textOf, generateLevels, emissionCounts } from './compile.js?v=0.4.0';
+import { run, profileName, callCount, testBlock, shapeForApi, inspectProfile, modelsForSource, sourceForBlock, cachedModels, fetchModelList, previewBlock } from './run.js?v=0.4.0';
+import { Canvas, WIRE_LABEL, TYPE_LABEL } from './canvas.js?v=0.4.0';
 
 let root = null;
 let canvas = null;
@@ -409,6 +410,7 @@ function renderSidebar() {
     for (const [type, icon, label] of [
         [NODE_TYPES.PROMPT, 'fa-comment', 'Prompt'],
         [NODE_TYPES.GENERATE, 'fa-brain', 'Generate'],
+        [NODE_TYPES.DECIDER, 'fa-code-fork', 'Decider'],
         [NODE_TYPES.HISTORY, 'fa-clock-rotate-left', 'History'],
         [NODE_TYPES.INJECTION, 'fa-syringe', 'Injection'],
         [NODE_TYPES.NOTE, 'fa-note-sticky', 'Note'],
@@ -821,6 +823,7 @@ function renderNodeInspector(box) {
     else if (node.type === NODE_TYPES.HISTORY) renderHistoryFields(box, node);
     else if (node.type === NODE_TYPES.INJECTION) renderInjectionFields(box, node);
     else if (node.type === NODE_TYPES.GENERATE) renderGenerateFields(box, node);
+    else if (node.type === NODE_TYPES.DECIDER) renderDeciderFields(box, node);
     else if (node.type === NODE_TYPES.NOTE) {
         const ta = el('textarea', 'text_pole pc-textarea');
         ta.rows = 8;
@@ -831,7 +834,7 @@ function renderNodeInspector(box) {
         box.append(el('div', 'pc-hint', 'Everything wired into this block is sent, in the order the blocks sit on the canvas.'));
     }
 
-    if (node.type !== NODE_TYPES.NOTE) {
+    if (node.type !== NODE_TYPES.NOTE && node.type !== NODE_TYPES.DECIDER) {
         box.append(el('hr', 'pc-rule'));
         renderConditionEditor(box, node);
         renderModelEditor(box, node);
@@ -1263,84 +1266,259 @@ function renderInjectionFields(box, node) {
 
 function renderConditionEditor(box, node) {
     node.condition ??= { mode: 'always' };
-    const c = node.condition;
+    renderRuleFields(box, node.condition, {
+        label: 'Include this block',
+        modes: BLOCK_RULE_MODES,
+        scopes: SEARCH_SCOPES,
+    });
+}
 
-    box.append(field('Include this block', dropdown([
-        ['always', 'Always'],
-        ['probability', 'Probability'],
-        ['search', 'Term search'],
-        ['variable', 'Variable'],
-        ['model', 'Model name'],
-    ], c.mode, (v) => { c.mode = v; touch(); canvas.render(); renderInspector(); })));
+const BLOCK_RULE_MODES = [
+    ['always', 'Always'],
+    ['probability', 'Probability'],
+    ['search', 'Term search'],
+    ['variable', 'Variable'],
+    ['model', 'Model name'],
+    ['time', 'Time of day'],
+    ['chat', 'Chat length / last speaker'],
+    ['character', 'Character name'],
+];
+const KEY_RULE_MODES = [
+    ['search', 'Words or phrases'],
+    ['length', 'Length of the text'],
+    ['probability', 'Probability'],
+    ['time', 'Time of day'],
+    ['chat', 'Chat length / last speaker'],
+    ['variable', 'Variable'],
+    ['character', 'Character name'],
+    ['model', 'Model name'],
+    ['always', 'Always'],
+];
+const SEARCH_SCOPES = [
+    ['lastUser', 'last user message'],
+    ['lastAssistant', 'last reply'],
+    ['lastN', 'last N messages'],
+    ['chat', 'whole chat'],
+];
+const KEY_SCOPES = [['incoming', 'the text coming in'], ...SEARCH_SCOPES];
+const OPS = [['gt', 'more than'], ['gte', 'at least'], ['lt', 'fewer than'], ['lte', 'at most'], ['eq', 'exactly']];
+const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+/**
+ * The controls for one rule. Blocks use one to decide whether they are
+ * included; each Decider key has a list of them.
+ */
+function renderRuleFields(box, c, { label = 'Rule', modes = BLOCK_RULE_MODES, scopes = SEARCH_SCOPES } = {}) {
+    const redraw = () => { touch(); canvas.render(); renderInspector(); };
+    const soft = () => { touch(); canvas.render(); };
+    const num = (value, onInput, attrs = {}) => {
+        const n = el('input', 'text_pole');
+        n.type = 'number';
+        Object.assign(n, attrs);
+        n.value = value;
+        n.addEventListener('input', () => onInput(Number(n.value)));
+        return n;
+    };
+    const text = (value, onInput, placeholder = '') => {
+        const t = el('input', 'text_pole');
+        t.value = value ?? '';
+        t.placeholder = placeholder;
+        t.addEventListener('input', () => onInput(t.value));
+        return t;
+    };
+
+    box.append(field(label, dropdown(modes, c.mode ?? modes[0][0], (v) => { c.mode = v; redraw(); })));
 
     if (c.mode === 'probability') {
-        const n = el('input', 'text_pole');
-        n.type = 'number'; n.min = '0'; n.max = '100';
-        n.value = c.chance ?? 100;
-        n.addEventListener('input', () => { c.chance = Number(n.value); touch(); canvas.render(); });
-        box.append(field('Chance (%)', n, 'Rolled fresh on every send.'));
+        box.append(field('Chance (%)', num(c.chance ?? 100, v => { c.chance = v; soft(); }, { min: '0', max: '100' }), 'Rolled fresh on every send.'));
     }
 
     if (c.mode === 'search') {
         const terms = el('textarea', 'text_pole pc-textarea');
         terms.rows = 4;
-        terms.placeholder = 'one term per line';
+        terms.placeholder = 'one word or phrase per line';
         terms.value = c.terms ?? '';
-        terms.addEventListener('input', () => { c.terms = terms.value; touch(); });
-        box.append(field('Terms', terms));
+        terms.addEventListener('input', () => { c.terms = terms.value; soft(); });
+        box.append(field('Words or phrases', terms));
 
         box.append(field('Match', dropdown([
-            ['any', 'any term matches'],
-            ['all', 'all terms match'],
-            ['none', 'no term matches'],
-        ], c.matchMode ?? 'any', (v) => { c.matchMode = v; touch(); canvas.render(); })));
+            ['any', 'any of them appears'],
+            ['all', 'all of them appear'],
+            ['none', 'none of them appears'],
+        ], c.matchMode ?? 'any', (v) => { c.matchMode = v; soft(); })));
 
-        box.append(field('Look in', dropdown([
-            ['lastUser', 'last user message'],
-            ['lastAssistant', 'last reply'],
-            ['lastN', 'last N messages'],
-            ['chat', 'whole chat'],
-        ], c.scope ?? 'lastUser', (v) => { c.scope = v; touch(); renderInspector(); })));
+        box.append(field('Look in', dropdown(scopes, c.scope ?? scopes[0][0], (v) => { c.scope = v; redraw(); })));
 
-        if ((c.scope ?? 'lastUser') === 'lastN') {
-            const n = el('input', 'text_pole');
-            n.type = 'number'; n.min = '1';
-            n.value = c.n ?? 3;
-            n.addEventListener('input', () => { c.n = Number(n.value) || 3; touch(); });
-            box.append(field('How many messages', n));
+        if ((c.scope ?? scopes[0][0]) === 'lastN') {
+            box.append(field('How many messages', num(c.n ?? 3, v => { c.n = v || 3; touch(); }, { min: '1' })));
         }
 
-        box.append(checkline('Treat terms as regular expressions', c.regex, (v) => { c.regex = v; touch(); }));
+        box.append(checkline('Treat as regular expressions', c.regex, (v) => { c.regex = v; touch(); }));
         box.append(checkline('Case sensitive', c.caseSensitive, (v) => { c.caseSensitive = v; touch(); }));
     }
 
+    if (c.mode === 'length') {
+        const row = el('div', 'pc-row');
+        row.append(
+            dropdown(OPS, c.op ?? 'gt', (v) => { c.op = v; soft(); }),
+            num(c.value ?? 300, v => { c.value = v; soft(); }, { min: '0' }),
+            dropdown([['words', 'words'], ['chars', 'characters']], c.unit ?? 'words', (v) => { c.unit = v; soft(); }),
+        );
+        box.append(field('The text coming in is', row));
+    }
+
+    if (c.mode === 'time') {
+        const row = el('div', 'pc-row');
+        const from = el('input', 'text_pole'); from.type = 'time'; from.value = c.from ?? '22:00';
+        const to = el('input', 'text_pole'); to.type = 'time'; to.value = c.to ?? '06:00';
+        c.from ??= from.value; c.to ??= to.value;
+        from.addEventListener('input', () => { c.from = from.value; soft(); });
+        to.addEventListener('input', () => { c.to = to.value; soft(); });
+        row.append(from, el('span', 'pc-hint', 'to'), to);
+        box.append(field('Between', row, 'Your computer’s clock. A range like 22:00 to 06:00 runs past midnight.'));
+        const days = el('div', 'pc-row pc-days');
+        const on = new Set((c.days ?? []).map(Number));
+        DAYS.forEach((d, i) => {
+            days.append(checkline(d, on.has(i), (v) => {
+                v ? on.add(i) : on.delete(i);
+                c.days = [...on].sort();
+                soft();
+            }));
+        });
+        box.append(field('On these days (none ticked = every day)', days));
+    }
+
+    if (c.mode === 'chat') {
+        box.append(field('Check', dropdown([
+            ['messages', 'number of messages'],
+            ['turn', 'number of your turns'],
+            ['lastSpeaker', 'who spoke last'],
+        ], c.what ?? 'messages', (v) => { c.what = v; redraw(); })));
+        if ((c.what ?? 'messages') === 'lastSpeaker') {
+            box.append(field('Last message is from', dropdown([['user', 'you'], ['character', 'the character']],
+                c.value || 'user', (v) => { c.value = v; soft(); })));
+        } else {
+            const row = el('div', 'pc-row');
+            row.append(
+                dropdown([...OPS, ['every', 'every']], c.op ?? 'gte', (v) => { c.op = v; soft(); }),
+                num(c.value ?? 10, v => { c.value = v; soft(); }, { min: '0' }),
+            );
+            box.append(field('Is', row, c.op === 'every' ? '"every 5" matches on the 5th, 10th, 15th…' : ''));
+        }
+    }
+
     if (c.mode === 'variable') {
-        const name = el('input', 'text_pole');
-        name.value = c.name ?? '';
-        name.addEventListener('input', () => { c.name = name.value; touch(); canvas.render(); });
-        box.append(field('Variable name', name));
-
+        box.append(field('Variable name', text(c.name, v => { c.name = v; soft(); })));
         box.append(field('Scope', dropdown([['local', 'chat variable'], ['global', 'global variable']],
-            c.scope ?? 'local', (v) => { c.scope = v; touch(); })));
-
+            c.scope === 'global' ? 'global' : 'local', (v) => { c.scope = v; touch(); })));
         box.append(field('Test', dropdown([
             ['eq', 'equals'], ['neq', 'does not equal'], ['gt', 'greater than'],
             ['lt', 'less than'], ['contains', 'contains'], ['exists', 'is set'],
-        ], c.op ?? 'eq', (v) => { c.op = v; touch(); canvas.render(); })));
-
-        const val = el('input', 'text_pole');
-        val.value = c.value ?? '';
-        val.addEventListener('input', () => { c.value = val.value; touch(); canvas.render(); });
-        box.append(field('Value', val));
+        ], c.op ?? 'eq', (v) => { c.op = v; soft(); })));
+        box.append(field('Value', text(c.value, v => { c.value = v; soft(); })));
     }
 
     if (c.mode === 'model') {
-        const val = el('input', 'text_pole');
-        val.placeholder = 'claude, gpt-4, gemini…';
-        val.value = c.value ?? '';
-        val.addEventListener('input', () => { c.value = val.value; touch(); canvas.render(); });
-        box.append(field('Model name contains', val));
+        box.append(field('Model name contains', text(c.value, v => { c.value = v; soft(); }, 'claude, gpt-4, gemini…')));
     }
+
+    if (c.mode === 'character') {
+        box.append(field('Character name contains', text(c.value, v => { c.value = v; soft(); }, 'Kenzy')));
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Decider                                                             */
+/* ------------------------------------------------------------------ */
+
+function renderDeciderFields(box, node) {
+    const redraw = () => { touch(); canvas.render(); renderInspector(); };
+    node.keys ??= [];
+    node.fallback ??= { id: `k_${Date.now().toString(36)}`, name: 'Otherwise', weight: 1 };
+
+    box.append(el('div', 'pc-hint',
+        'Picks one path for what is wired into it. No model is asked: the keys are checked top to bottom, the first that matches wins, and the fallback takes everything else. What comes in goes on, unchanged, down the chosen path only. Blocks on the other paths are skipped and cost nothing.'));
+
+    box.append(field('Choose by', dropdown([
+        ['rules', 'Rules — first key that matches'],
+        ['random', 'Weighted random'],
+    ], node.mode ?? 'rules', (v) => { node.mode = v; redraw(); })));
+
+    const random = node.mode === 'random';
+
+    node.keys.forEach((k, i) => {
+        const card = el('div', 'pc-key-card');
+        const head = el('div', 'pc-key-head');
+        const name = el('input', 'text_pole pc-key-name');
+        name.value = k.name ?? '';
+        name.placeholder = 'KEY';
+        name.addEventListener('input', () => { k.name = name.value; touch(); canvas.render(); });
+        head.append(name);
+        const tool = (icon, title, fn, off = false) => {
+            const b = mkBtn(icon, title, fn, 'pc-key-tool');
+            if (off) b.classList.add('pc-disabled');
+            return b;
+        };
+        head.append(
+            tool('fa-arrow-up', 'Check this key earlier', () => { if (i) { [node.keys[i - 1], node.keys[i]] = [node.keys[i], node.keys[i - 1]]; redraw(); } }, i === 0),
+            tool('fa-arrow-down', 'Check this key later', () => { if (i < node.keys.length - 1) { [node.keys[i + 1], node.keys[i]] = [node.keys[i], node.keys[i + 1]]; redraw(); } }, i === node.keys.length - 1),
+            tool('fa-trash-can', 'Remove this key and its wires', () => { removeDeciderKey(current, node, k.id); redraw(); }),
+        );
+        card.append(head);
+
+        if (random) {
+            const w = el('input', 'text_pole');
+            w.type = 'number'; w.min = '0'; w.value = k.weight ?? 1;
+            w.addEventListener('input', () => { k.weight = Math.max(0, Number(w.value) || 0); touch(); canvas.render(); });
+            card.append(field('Weight', w));
+        } else {
+            k.conditions ??= [];
+            if (k.conditions.length > 1) {
+                card.append(field('Matches when', dropdown([['any', 'any rule below holds'], ['all', 'every rule below holds']],
+                    k.match ?? 'any', (v) => { k.match = v; touch(); canvas.render(); })));
+            }
+            k.conditions.forEach((c, ci) => {
+                const rule = el('div', 'pc-key-rule');
+                renderRuleFields(rule, c, { label: k.conditions.length > 1 ? `Rule ${ci + 1}` : 'Rule', modes: KEY_RULE_MODES, scopes: KEY_SCOPES });
+                if (k.conditions.length > 1) {
+                    const rm = el('a', 'pc-key-rm', 'remove this rule');
+                    rm.href = 'javascript:void(0)';
+                    rm.addEventListener('click', () => { k.conditions.splice(ci, 1); redraw(); });
+                    rule.append(rm);
+                }
+                card.append(rule);
+            });
+            const add = el('a', 'pc-key-add', '+ another rule for this key');
+            add.href = 'javascript:void(0)';
+            add.addEventListener('click', () => { k.conditions.push({ mode: 'search', scope: 'incoming', terms: '', matchMode: 'any' }); redraw(); });
+            card.append(add);
+        }
+        box.append(card);
+    });
+
+    const addKey = el('div', 'pc-btn menu_button');
+    addKey.innerHTML = '<i class="fa-solid fa-plus"></i> Add a key';
+    addKey.addEventListener('click', () => {
+        node.keys.push(newDeciderKey(`KEY ${node.keys.length + 1}`));
+        redraw();
+    });
+    box.append(addKey);
+
+    const fb = el('div', 'pc-key-card pc-key-fallback');
+    const fbName = el('input', 'text_pole pc-key-name');
+    fbName.value = node.fallback.name ?? 'Otherwise';
+    fbName.addEventListener('input', () => { node.fallback.name = fbName.value; touch(); canvas.render(); });
+    fb.append(field(random ? 'Fallback key' : 'Fallback — when no key matches', fbName));
+    if (random) {
+        const w = el('input', 'text_pole');
+        w.type = 'number'; w.min = '0'; w.value = node.fallback.weight ?? 1;
+        w.addEventListener('input', () => { node.fallback.weight = Math.max(0, Number(w.value) || 0); touch(); canvas.render(); });
+        fb.append(field('Weight', w));
+    }
+    box.append(fb);
+
+    box.append(checkline('Show its choice in the chat', node.showInChat !== false, (v) => { node.showInChat = v; touch(); }));
+    box.append(el('div', 'pc-hint', 'Wire each key from its own dot on the block’s bottom edge.'));
 }
 
 function renderModelEditor(box, node) {
@@ -1785,6 +1963,7 @@ function onCanvasMenu({ event, node, wire, at }) {
         for (const [type, icon, label] of [
             [NODE_TYPES.PROMPT, 'fa-comment', 'Prompt'],
             [NODE_TYPES.GENERATE, 'fa-brain', 'Generate block'],
+            [NODE_TYPES.DECIDER, 'fa-code-fork', 'Decider'],
             [NODE_TYPES.ST, 'fa-box-archive', 'SillyTavern prompt'],
             [NODE_TYPES.HISTORY, 'fa-clock-rotate-left', 'Chat history'],
             [NODE_TYPES.INJECTION, 'fa-syringe', 'Injection'],

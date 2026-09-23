@@ -22,8 +22,8 @@
  * no exceptions, because a graph you have to trace to predict is not a tool.
  */
 
-import { ctx, safe, NODE_TYPES, WIRE_KINDS, wiresInto, wiresOutOf, outputNode, togetherGroup, groupWires } from './state.js?v=0.3.0';
-import { stPrompt, MARKER_SOURCES } from './library.js?v=0.3.0';
+import { ctx, safe, NODE_TYPES, WIRE_KINDS, wiresInto, wiresOutOf, outputNode, togetherGroup, groupWires, deciderKeys } from './state.js?v=0.4.0';
+import { stPrompt, MARKER_SOURCES } from './library.js?v=0.4.0';
 
 /* ------------------------------------------------------------------ */
 /* live context                                                        */
@@ -69,9 +69,11 @@ export async function gatherContext({ dryRun = false } = {}) {
 /* conditions                                                          */
 /* ------------------------------------------------------------------ */
 
-function haystack(cond, live) {
+function haystack(cond, live, extra = {}) {
     const chat = live.chat ?? [];
     switch (cond.scope) {
+        case 'incoming':
+            return String(extra.incoming ?? '');
         case 'lastAssistant': {
             const m = [...chat].reverse().find(x => !x.is_user && !x.is_system);
             return m?.mes ?? '';
@@ -110,11 +112,97 @@ function matchTerms(text, cond) {
     }
 }
 
+/** Which of the terms actually occur in the text, for saying why. */
+function foundTerms(text, cond) {
+    const terms = String(cond.terms || '').split('\n').map(t => t.trim()).filter(Boolean);
+    const subject = cond.caseSensitive ? text : text.toLowerCase();
+    return terms.filter(t => {
+        if (cond.regex) { try { return new RegExp(t, cond.caseSensitive ? '' : 'i').test(text); } catch { return false; } }
+        return subject.includes(cond.caseSensitive ? t : t.toLowerCase());
+    });
+}
+
 /**
  * @returns {{pass: boolean, why: string}}
  */
-export function evaluateCondition(node, live) {
+export function evaluateCondition(node, live, extra = {}) {
     const cond = node.condition ?? { mode: 'always' };
+    return evaluateRule(cond, live, extra);
+}
+
+const WORDS = (t) => (String(t).trim().match(/\S+/g) ?? []).length;
+
+function compare(a, op, b) {
+    switch (op) {
+        case 'gt': return a > b;
+        case 'lt': return a < b;
+        case 'gte': return a >= b;
+        case 'lte': return a <= b;
+        case 'every': return b > 0 && a > 0 && a % b === 0;
+        case 'eq':
+        default: return a === b;
+    }
+}
+const OP_WORD = { gt: 'more than', lt: 'fewer than', gte: 'at least', lte: 'at most', eq: 'exactly', every: 'every' };
+
+/** "22:30" -> minutes past midnight, or null. */
+function clock(t) {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(String(t ?? '').trim());
+    if (!m) return null;
+    return (Number(m[1]) % 24) * 60 + Math.min(59, Number(m[2]));
+}
+
+/**
+ * One condition, on its own. Blocks use one to decide whether they are
+ * included; a Decider key uses a list of them to decide whether it matches.
+ * `extra.incoming` is the text wired into a Decider, when there is one.
+ * @returns {{pass: boolean, why: string}}
+ */
+export function evaluateRule(cond, live, extra = {}) {
+    cond ??= { mode: 'always' };
+    switch (cond.mode) {
+        case 'time': {
+            const now = extra.now ?? new Date();
+            const mins = now.getHours() * 60 + now.getMinutes();
+            const from = clock(cond.from), to = clock(cond.to);
+            let inRange = true;
+            if (from !== null && to !== null) {
+                inRange = from <= to ? (mins >= from && mins < to) : (mins >= from || mins < to);
+            }
+            const days = Array.isArray(cond.days) && cond.days.length ? cond.days.map(Number) : null;
+            const dayOk = !days || days.includes(now.getDay());
+            const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+            return { pass: inRange && dayOk, why: `time ${cond.from || '?'}\u2013${cond.to || '?'}${days ? ' on chosen days' : ''} (now ${hhmm})` };
+        }
+        case 'chat': {
+            const chat = (live.chat ?? []).filter(m => !m.is_system);
+            if (cond.what === 'lastSpeaker') {
+                const last = chat[chat.length - 1];
+                const who = !last ? 'nobody' : last.is_user ? 'user' : 'character';
+                const want = cond.value || 'user';
+                return { pass: who === want, why: `last message is from the ${want} (it is from the ${who})` };
+            }
+            const n = cond.what === 'turn' ? chat.filter(m => m.is_user).length : chat.length;
+            const target = Number(cond.value) || 0;
+            const label = cond.what === 'turn' ? 'user turns' : 'messages';
+            return { pass: compare(n, cond.op || 'gte', target), why: `${label}: ${n}, wanted ${OP_WORD[cond.op || 'gte']} ${target}` };
+        }
+        case 'length': {
+            const text = extra.incoming !== undefined ? String(extra.incoming) : haystack({ scope: 'lastUser' }, live);
+            const unit = cond.unit === 'chars' ? 'chars' : 'words';
+            const n = unit === 'chars' ? text.length : WORDS(text);
+            const target = Number(cond.value) || 0;
+            return { pass: compare(n, cond.op || 'gt', target), why: `${n} ${unit === 'chars' ? 'characters' : 'words'}, wanted ${OP_WORD[cond.op || 'gt']} ${target}` };
+        }
+        case 'character': {
+            const name = String(live.name2 ?? '');
+            const needle = String(cond.value ?? '').trim();
+            const pass = needle ? name.toLowerCase().includes(needle.toLowerCase()) : true;
+            return { pass, why: `character name contains "${needle}" (it is ${name || 'unknown'})` };
+        }
+        default:
+            break;
+    }
     switch (cond.mode) {
         case 'probability': {
             const chance = Math.max(0, Math.min(100, Number(cond.chance ?? 100)));
@@ -123,9 +211,17 @@ export function evaluateCondition(node, live) {
             return { pass, why: `probability ${chance}% rolled ${roll.toFixed(1)}` };
         }
         case 'search': {
-            const text = haystack(cond, live);
+            const text = haystack(cond, live, extra);
             const pass = matchTerms(text, cond);
-            return { pass, why: `term search (${cond.matchMode || 'any'}) in ${cond.scope || 'lastUser'}` };
+            const where = { incoming: 'the text coming in', lastUser: 'the last user message', lastAssistant: 'the last reply', lastN: `the last ${cond.n || 3} messages`, chat: 'the whole chat' }[cond.scope || 'lastUser'] ?? cond.scope;
+            const found = foundTerms(text, cond);
+            const mode = cond.matchMode || 'any';
+            return {
+                pass,
+                why: found.length
+                    ? `${mode === 'none' ? 'found' : 'matched'} ${found.slice(0, 3).map(t => `"${t}"`).join(', ')} in ${where}`
+                    : `no term found in ${where}`,
+            };
         }
         case 'variable': {
             const c = ctx();
@@ -155,6 +251,58 @@ export function evaluateCondition(node, live) {
         default:
             return { pass: true, why: 'always' };
     }
+}
+
+/* ------------------------------------------------------------------ */
+/* deciders                                                            */
+/* ------------------------------------------------------------------ */
+
+/** A search rule with no terms would match everything; in a key that is never meant. */
+function emptyRule(cond) {
+    return cond?.mode === 'search' && !String(cond.terms ?? '').trim();
+}
+
+/**
+ * Pick a Decider's path. No model is involved: the keys are checked top to
+ * bottom, the first one whose rules match wins, and the fallback takes
+ * everything else — so a Decider always goes somewhere.
+ *
+ * @param {object} node      the Decider
+ * @param {object} live      gathered context
+ * @param {string} incoming  the text wired into it
+ * @returns {{key: string, name: string, why: string, fallback: boolean}}
+ */
+export function evaluateDecider(node, live, incoming, extra = {}) {
+    const fb = node.fallback ?? { id: 'fallback', name: 'Otherwise' };
+    const keys = (node.keys ?? []).filter(Boolean);
+    const pick = (k, why, fallback = false) => ({ key: k.id, name: k.name || 'key', why, fallback });
+
+    if (node.enabled === false) return pick(fb, 'switched off, so it takes the fallback path', true);
+
+    if (node.mode === 'random') {
+        const all = [...keys, fb].map(k => ({ k, w: Math.max(0, Number(k.weight ?? 1)) }));
+        const total = all.reduce((n, x) => n + x.w, 0);
+        if (total <= 0) return pick(fb, 'every weight is zero', true);
+        let roll = (extra.random ?? Math.random)() * total;
+        for (const { k, w } of all) {
+            if ((roll -= w) < 0) return pick(k, `weighted pick: ${Math.round(100 * w / total)}% chance`, k === fb);
+        }
+        return pick(fb, 'weighted pick', true);
+    }
+
+    for (const k of keys) {
+        const rules = (k.conditions ?? []).filter(c => c && !emptyRule(c));
+        if (!rules.length) continue;
+        const results = rules.map(c => evaluateRule(c, live, { ...extra, incoming }));
+        const all = k.match === 'all';
+        const ok = all ? results.every(r => r.pass) : results.some(r => r.pass);
+        if (!ok) continue;
+        const why = all
+            ? results.map(r => r.why).join('; ')
+            : results.find(r => r.pass).why;
+        return pick(k, why);
+    }
+    return pick(fb, keys.length ? 'no key matched' : 'it has no keys yet', true);
 }
 
 /* ------------------------------------------------------------------ */
@@ -389,12 +537,39 @@ function generateOutput(node, results, live) {
  * @param {Record<string,string>} results  answers from Generate blocks already run
  * @returns {{messages: Array, warnings: Array<string>, trace: Array, pending: Array<string>}}
  */
-export function collect(graph, targetId, live, results = {}) {
+export function collect(graph, targetId, live, results = {}, decisions = {}) {
     const warnings = [];
     const trace = [];
     const pending = [];
     const memo = new Map();
     const seenTwice = new Set();
+
+    /**
+     * The path a Decider takes, deciding it now if it has not been. It can
+     * only decide once every Generate block feeding it has answered: until
+     * then the text it reads does not exist. In that case (a preview, before
+     * anything has run) it follows the fallback path and says so.
+     */
+    // Settle every Decider upstream before walking, because which blocks
+    // count at all depends on what they chose. One that cannot choose yet
+    // (it reads a Generate answer that does not exist) is shown following its
+    // fallback, and marked as provisional.
+    const choice = {};
+    const provisional = {};
+    for (const dec of upstreamDeciders(graph, targetId)) {
+        const d = tryDecide(graph, dec, live, results, decisions);
+        if (d) { choice[dec.id] = d.key; continue; }
+        provisional[dec.id] = {
+            key: dec.fallback?.id,
+            name: dec.fallback?.name || 'Otherwise',
+            why: 'decided at send time, once the text it reads has been written \u2014 this preview follows the fallback path',
+            fallback: true,
+            provisional: true,
+        };
+        choice[dec.id] = provisional[dec.id].key;
+    }
+    const cut = cutNodes(graph, choice);
+    const decisionFor = (dec) => decisions[dec.id] ?? provisional[dec.id] ?? { key: dec.fallback?.id, name: dec.fallback?.name, why: '', fallback: true };
 
     function contribute(nodeId, isTarget = false) {
         if (memo.has(nodeId)) {
@@ -403,6 +578,12 @@ export function collect(graph, targetId, live, results = {}) {
         }
         const node = graph.nodes[nodeId];
         if (!node) return [];
+
+        if (cut.has(nodeId) && !isTarget) {
+            trace.push({ id: nodeId, title: node.title, status: 'skipped', why: 'on a path its Decider did not take' });
+            memo.set(nodeId, []);
+            return [];
+        }
 
         const off = node.enabled === false;
         const cond = off ? { pass: false, why: 'switched off' } : evaluateCondition(node, live);
@@ -432,6 +613,9 @@ export function collect(graph, targetId, live, results = {}) {
         const incoming = wiresInto(graph, nodeId)
             .map(w => ({ wire: w, src: graph.nodes[w.from] }))
             .filter(x => !!x.src)
+            // A Decider's paths not taken contribute nothing.
+            .filter(x => !cut.has(x.src.id))
+            .filter(x => x.src.type !== NODE_TYPES.DECIDER || decisionFor(x.src).key === x.wire.port)
             .sort((a, b) => byY(a.src, b.src));
 
         // The trace entry for this block is written only after its inputs have
@@ -445,7 +629,17 @@ export function collect(graph, targetId, live, results = {}) {
             const res = resolveNode(node, live);
             own = res.messages;
             warnings.push(...res.warnings);
-            if (node.type !== NODE_TYPES.OUTPUT && node.type !== NODE_TYPES.NOTE && node.type !== NODE_TYPES.GENERATE) {
+            if (node.type === NODE_TYPES.DECIDER && !isTarget) {
+                const d = decisionFor(node);
+                entry = {
+                    id: nodeId,
+                    title: node.title,
+                    status: d.provisional ? 'pending' : 'in',
+                    why: `\u2192 ${d.name}: ${d.why}`,
+                    decision: d.key,
+                    chars: 0,
+                };
+            } else if (node.type !== NODE_TYPES.OUTPUT && node.type !== NODE_TYPES.NOTE && node.type !== NODE_TYPES.GENERATE && node.type !== NODE_TYPES.DECIDER) {
                 entry = {
                     id: nodeId,
                     title: node.title,
@@ -510,6 +704,131 @@ export function collect(graph, targetId, live, results = {}) {
     }
 
     return { messages, warnings, trace, pending };
+}
+
+/**
+ * Decide a Decider if it can be decided yet, and remember the answer in
+ * `decisions` so it is made once per send. Returns null while a Generate
+ * block it reads from has not answered.
+ */
+export function tryDecide(graph, dec, live, results = {}, decisions = {}) {
+    if (decisions[dec.id]) return decisions[dec.id];
+    // Rules that only look at the chat, the time or variables do not need the
+    // incoming text, so they can decide before anything upstream has run.
+    let incoming = '';
+    if (readsIncoming(dec)) {
+        const inner = collect(graph, dec.id, live, results, decisions);
+        if (inner.pending.length) return null;
+        incoming = textOf(inner.messages);
+    }
+    const d = { ...evaluateDecider(dec, live, incoming), title: dec.title };
+    decisions[dec.id] = d;
+    return d;
+}
+
+/** Whether any of a Decider's rules read the text wired into it. */
+export function readsIncoming(dec) {
+    if (dec.enabled === false || dec.mode === 'random') return false;
+    return (dec.keys ?? []).some(k => (k.conditions ?? []).some(c =>
+        c && !emptyRule(c) && ((c.mode === 'search' && c.scope === 'incoming') || c.mode === 'length')));
+}
+
+/**
+ * Every block that can still matter to this send. A Decider that has chosen
+ * cuts off its other paths; one that cannot choose yet keeps all of them.
+ * Generate blocks outside this set are never called.
+ */
+export function liveNodes(graph, live, results = {}, decisions = {}) {
+    const out = outputNode(graph);
+    const seen = new Set();
+    if (!out) return seen;
+    const choice = {};
+    for (const dec of upstreamDeciders(graph, out.id)) {
+        const d = tryDecide(graph, dec, live, results, decisions);
+        if (d) choice[dec.id] = d.key;
+    }
+    const cut = cutNodes(graph, choice);
+    const stack = [out.id];
+    while (stack.length) {
+        const id = stack.pop();
+        if (seen.has(id)) continue;
+        seen.add(id);
+        for (const w of wiresInto(graph, id)) {
+            const src = graph.nodes[w.from];
+            if (!src || cut.has(src.id)) continue;
+            if (src.type === NODE_TYPES.DECIDER && choice[src.id] !== undefined && choice[src.id] !== w.port) continue;
+            stack.push(src.id);
+        }
+    }
+    return seen;
+}
+
+/** Every Decider with a path into this block. */
+function upstreamDeciders(graph, nodeId) {
+    const found = [];
+    const seen = new Set([nodeId]);
+    const stack = [nodeId];
+    while (stack.length) {
+        const id = stack.pop();
+        for (const w of wiresInto(graph, id)) {
+            if (seen.has(w.from)) continue;
+            seen.add(w.from);
+            const src = graph.nodes[w.from];
+            if (!src) continue;
+            if (src.type === NODE_TYPES.DECIDER) found.push(src);
+            stack.push(src.id);
+        }
+    }
+    return found;
+}
+
+/**
+ * The blocks switched off by what the Deciders chose: everything downstream
+ * of a key that was not chosen, up to where that path meets the chosen one
+ * again. Output is never switched off.
+ *
+ * @param {Record<string,string>} choice Decider id -> chosen key id
+ */
+export function cutNodes(graph, choice) {
+    const cut = new Set();
+    const outId = outputNode(graph)?.id;
+    const forward = (starts) => {
+        const seen = new Set();
+        const stack = [...starts];
+        while (stack.length) {
+            const id = stack.pop();
+            if (seen.has(id)) continue;
+            seen.add(id);
+            for (const w of wiresOutOf(graph, id)) stack.push(w.to);
+        }
+        return seen;
+    };
+    for (const [decId, key] of Object.entries(choice)) {
+        const wires = wiresOutOf(graph, decId);
+        const taken = forward(wires.filter(w => w.port === key).map(w => w.to));
+        const not = forward(wires.filter(w => w.port !== key).map(w => w.to));
+        for (const id of not) if (!taken.has(id) && id !== outId && id !== decId) cut.add(id);
+    }
+    return cut;
+}
+
+/** The Generate blocks upstream of a block that it has to wait for. */
+export function generateDeps(graph, nodeId) {
+    const deps = new Set();
+    const seen = new Set();
+    const walk = [nodeId];
+    while (walk.length) {
+        const id = walk.pop();
+        for (const w of wiresInto(graph, id)) {
+            if (seen.has(w.from)) continue;
+            seen.add(w.from);
+            const src = graph.nodes[w.from];
+            if (!src) continue;
+            if (src.type === NODE_TYPES.GENERATE) deps.add(src.id);
+            else walk.push(src.id);
+        }
+    }
+    return deps;
 }
 
 /* ------------------------------------------------------------------ */
@@ -589,13 +908,18 @@ export function emissionCounts(graph) {
         seen.add(nodeId);
 
         let total = 0;
+        const self = graph.nodes[nodeId];
+        // A Decider's paths are alternatives: only one is ever taken, so the
+        // text goes out as often as its busiest path, not the sum of them.
+        const alt = self?.type === NODE_TYPES.DECIDER;
         for (const w of wiresOutOf(graph, nodeId)) {
             const target = graph.nodes[w.to];
             if (!target) continue;
             // A Generate block is a barrier: what goes into it never travels on,
             // so a path that ends at one does not reach the prompt as this text.
             if (target.type === NODE_TYPES.GENERATE) continue;
-            total += paths(w.to, new Set(seen));
+            const n = paths(w.to, new Set(seen));
+            total = alt ? Math.max(total, n) : total + n;
         }
         counts.set(nodeId, total);
         return total;
@@ -638,6 +962,26 @@ function strandedWarnings(graph) {
         out.push(node.type === NODE_TYPES.GENERATE
             ? `"${node.title}" is not wired through to Output, so it never runs and its reply is never used.`
             : `"${node.title}" is not wired through to Output, so nothing in it is sent.`);
+    }
+    return out;
+}
+
+/** Decider keys that go nowhere, and keys that can never match. */
+function deciderWarnings(graph) {
+    const out = [];
+    for (const node of Object.values(graph.nodes)) {
+        if (node.type !== NODE_TYPES.DECIDER || node.enabled === false) continue;
+        const wired = new Set(wiresOutOf(graph, node.id).map(w => w.port));
+        const fb = node.fallback;
+        if (fb && !wired.has(fb.id)) {
+            out.push(`"${node.title}": the "${fb.name || 'Otherwise'}" path is not wired, so when no key matches, nothing below this Decider is sent.`);
+        }
+        for (const k of node.keys ?? []) {
+            if (!wired.has(k.id)) out.push(`"${node.title}": key "${k.name}" is not wired to anything, so choosing it sends nothing below this Decider.`);
+            if (node.mode !== 'random' && !(k.conditions ?? []).some(c => c && !emptyRule(c))) {
+                out.push(`"${node.title}": key "${k.name}" has no rules yet, so it is never chosen.`);
+            }
+        }
     }
     return out;
 }
@@ -736,7 +1080,7 @@ export function generateLevels(graph) {
  * @param {object} [options.live] pre-gathered context
  * @param {Record<string,string>} [options.results] answers from Generate blocks already run
  */
-export async function compile(graph, { dryRun = false, live = null, results = {} } = {}) {
+export async function compile(graph, { dryRun = false, live = null, results = {}, decisions = {} } = {}) {
     if (!graph) return fail('No canvas selected.');
     const out = outputNode(graph);
     if (!out) return fail('This canvas has no Output block.');
@@ -748,10 +1092,12 @@ export async function compile(graph, { dryRun = false, live = null, results = {}
     const waveOf = new Map();
     generateLevels(graph).forEach((wave, i) => wave.forEach(n => waveOf.set(n.id, i)));
 
+    const alive = liveNodes(graph, ctxLive, results, decisions);
     for (const gen of generateOrder(graph)) {
+        if (!alive.has(gen.id)) continue;
         const cond = evaluateCondition(gen, ctxLive);
         if (!cond.pass) continue;
-        const built = collect(graph, gen.id, ctxLive, results);
+        const built = collect(graph, gen.id, ctxLive, results, decisions);
         warnings.push(...built.warnings);
         if (!built.messages.length) {
             warnings.push(`"${gen.title}" has nothing wired into it and no text of its own, so it will be skipped rather than asked an empty question.`);
@@ -770,9 +1116,18 @@ export async function compile(graph, { dryRun = false, live = null, results = {}
         });
     }
 
-    const built = collect(graph, out.id, ctxLive, results);
+    const built = collect(graph, out.id, ctxLive, results, decisions);
+    // A Decider behind a Generate block is not on Output's own path, but its
+    // choice shaped this prompt, so the trace says what it chose.
+    const inTrace = new Set(built.trace.map(t => t.id));
+    const hidden = Object.entries(decisions)
+        .filter(([id]) => !inTrace.has(id) && alive.has(id) && graph.nodes[id])
+        .sort(([a], [b]) => byY(graph.nodes[a], graph.nodes[b]))
+        .map(([id, d]) => ({ id, title: graph.nodes[id].title, status: 'in', why: `\u2192 ${d.name}: ${d.why}`, decision: d.key, chars: 0 }));
+    built.trace.unshift(...hidden);
     warnings.push(...built.warnings);
     warnings.push(...strandedWarnings(graph));
+    warnings.push(...deciderWarnings(graph));
     warnings.push(...duplicateTitleWarnings(graph));
 
     if (!built.messages.length) {
@@ -804,7 +1159,7 @@ export async function compile(graph, { dryRun = false, live = null, results = {}
         final: true,
     });
 
-    return { ok: true, stages, messages: built.messages, warnings, trace: built.trace, tokens, live: ctxLive };
+    return { ok: true, stages, messages: built.messages, warnings, trace: built.trace, tokens, live: ctxLive, decisions };
 
     function fail(reason) {
         return { ok: false, reason, stages: [], messages: [], warnings: [], trace: [], tokens: 0 };
