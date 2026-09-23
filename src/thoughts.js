@@ -11,7 +11,7 @@
  * later turn — only the canvas decides what gets sent.
  */
 
-import { ctx, safe } from './state.js?v=0.5.0';
+import { ctx, safe } from './state.js?v=0.6.0';
 
 const KEY = 'promptCanvas';
 
@@ -110,7 +110,16 @@ function thoughtElement(t, { open = false, pending = false, prompt = t.prompt ??
 
     const label = document.createElement('span');
     label.className = 'pc-thought-label';
-    label.textContent = (t.label || t.title || 'Notes') + (t.failed ? ' — failed' : '');
+    // Always name the block that wrote it. A custom heading, when you gave
+    // one, goes beside the name rather than replacing it.
+    const custom = t.label && t.label !== t.title && t.label !== 'Notes' && !t.decision ? t.label : '';
+    label.textContent = (t.decision ? (t.label || t.title) : (t.title || t.label || 'Generate')) + (t.failed ? ' — failed' : '');
+    if (custom) {
+        const sub = document.createElement('span');
+        sub.className = 'pc-thought-sub';
+        sub.textContent = custom;
+        label.append(' ', sub);
+    }
 
     const meta = document.createElement('span');
     meta.className = 'pc-thought-meta';

@@ -16,8 +16,8 @@
  *    recorded as the error, the run continues, and you see it in the trace.
  */
 
-import { ctx, safe, settings, save as saveSettings, NODE_TYPES, togetherGroup } from './state.js?v=0.5.0';
-import { compile, collect, generateOrder, generateLevels, gatherContext, evaluateCondition, liveNodes, generateDeps } from './compile.js?v=0.5.0';
+import { ctx, safe, settings, save as saveSettings, NODE_TYPES, togetherGroup } from './state.js?v=0.6.0';
+import { compile, collect, generateOrder, generateLevels, gatherContext, evaluateCondition, liveNodes, generateDeps } from './compile.js?v=0.6.0';
 
 /** The connection the chat itself is using, when a block does not name one. */
 function currentProfileId() {
@@ -139,8 +139,42 @@ export async function fetchModelList(node) {
     return models;
 }
 
+/** The API a connection profile talks to, in chat completion source terms. */
+function profileSource(profile) {
+    if (!profile?.api) return null;
+    const api = String(profile.api).replace(/-text$/, '');
+    return api === 'openai' ? 'openai' : api;
+}
+
+/**
+ * For a block that follows the chat: the chat's live model, and whether the
+ * selected profile still points at the same provider (so its key, endpoint
+ * and preset still apply).
+ */
+export function followChat(node) {
+    const c = ctx();
+    if (node?.profileId) return { following: false, useProfile: true, model: null };
+    const main = safe(() => c.mainApi) ?? 'openai';
+    const profile = getProfile(currentProfileId());
+    if (main !== 'openai') return { following: true, useProfile: true, model: null };
+    const live = safe(() => c.chatCompletionSettings?.chat_completion_source) ?? null;
+    const model = safe(() => c.getChatCompletionModel()) || null;
+    const same = !!profile && profile.mode === 'cc' && (!live || profileSource(profile) === live);
+    return { following: true, useProfile: same, model, source: live };
+}
+
+/** The model a Generate block will actually be sent to. */
+export function effectiveModel(node) {
+    if (node?.model) return node.model;
+    const f = followChat(node);
+    if (f.following && f.model) return f.model;
+    return inspectProfile(node?.profileId || currentProfileId()).model || null;
+}
+
 /** The provider a Generate block will actually go through. */
 export function sourceForBlock(node) {
+    const f = followChat(node);
+    if (f.following && f.source && !f.useProfile) return f.source;
     const profile = getProfile(node?.profileId || currentProfileId());
     if (profile?.api) {
         // Connection profiles name the API; chat completion sources match it.
@@ -304,7 +338,14 @@ async function askModel(rawMessages, node, signal = null) {
 
     const c = ctx();
     const maxTokens = Math.max(1, Number(node.maxTokens) || 500);
-    const profileId = node.profileId || currentProfileId();
+    // "Same as the chat" means what the chat is using right now. The selected
+    // connection profile is kept for its key, endpoint and preset, but its
+    // saved model can be stale: switch the chat to another model without
+    // re-saving the profile and the blocks would stay on the old one. So when
+    // a block follows the chat, the chat's live model wins — and if the chat
+    // has moved to a different provider altogether, the profile is skipped.
+    const follow = followChat(node);
+    const profileId = node.profileId || (follow.useProfile ? currentProfileId() : null);
 
     // A connection profile carries its own API, key, preset and prompt
     // post-processing, so routing through one is what makes "send this block
@@ -329,6 +370,7 @@ async function askModel(rawMessages, node, signal = null) {
         // leaves out, and let everything it does set stand.
         const override = { ...thinkingPayload };
         if (node.model) override.model = node.model;
+        else if (!node.profileId && follow.model && profile?.mode === 'cc') override.model = follow.model;
         else if (profile?.mode === 'cc' && !profile.model && info.model) override.model = info.model;
 
         // extractData: false hands back the provider's whole reply, which is
@@ -360,6 +402,8 @@ async function askModel(rawMessages, node, signal = null) {
         model: node.model || safe(() => c.getChatCompletionModel()),
         chat_completion_source: s.chat_completion_source,
         custom_prompt_post_processing: s.custom_prompt_post_processing,
+        ...(s.chat_completion_source === 'custom' && s.custom_url ? { custom_url: s.custom_url } : {}),
+        ...(s.reverse_proxy ? { reverse_proxy: s.reverse_proxy, proxy_password: s.proxy_password } : {}),
         ...thinkingPayload,
     }, {}, false, signal);
     return readReply(raw, false);
@@ -515,7 +559,7 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
             profile: profileName(gen.profileId || currentProfileId()),
             promptMessages: prompt.length,
             prompt,
-            model: gen.model || inspectProfile(gen.profileId || currentProfileId()).model || null,
+            model: effectiveModel(gen),
             usage: reply?.usage ?? null,
             finish: reply?.finish ?? null,
         };

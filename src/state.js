@@ -327,7 +327,7 @@ export function defaultNode(type, x, y) {
                 prefix: '',
                 suffix: '',
                 showInChat: true,
-                label: 'Notes',
+                label: '',
                 /** Send a closing system instruction as the user turn. See shapeForApi(). */
                 instructionAsUser: true,
             };

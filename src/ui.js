@@ -14,11 +14,11 @@ import {
     chatBinding, setChatBinding, characterBinding, setCharacterBinding,
     exportGraph, importGraph, blankGraph, isFolderCollapsed, setFolderCollapsed, togetherGroup,
     newDeciderKey, removeDeciderKey,
-} from './state.js?v=0.5.0';
-import * as L from './library.js?v=0.5.0';
-import { compile, gatherContext, resolveNode, textOf, generateLevels, emissionCounts } from './compile.js?v=0.5.0';
-import { run, profileName, callCount, testBlock, shapeForApi, inspectProfile, modelsForSource, sourceForBlock, cachedModels, fetchModelList, previewBlock } from './run.js?v=0.5.0';
-import { Canvas, WIRE_LABEL, TYPE_LABEL } from './canvas.js?v=0.5.0';
+} from './state.js?v=0.6.0';
+import * as L from './library.js?v=0.6.0';
+import { compile, gatherContext, resolveNode, textOf, generateLevels, emissionCounts } from './compile.js?v=0.6.0';
+import { run, profileName, effectiveModel, callCount, testBlock, shapeForApi, inspectProfile, modelsForSource, sourceForBlock, cachedModels, fetchModelList, previewBlock } from './run.js?v=0.6.0';
+import { Canvas, WIRE_LABEL, TYPE_LABEL } from './canvas.js?v=0.6.0';
 
 let root = null;
 let canvas = null;
@@ -252,9 +252,11 @@ function build() {
         onCreateAt: onCreateBlockAt,
         stPreview: stPreviewText,
         profileName,
+        effectiveModel,
         waveInfo,
         copiesOf: (node) => (current ? (emissionCounts(current).get(node.id) ?? 1) : 1),
         onNodeOverFolder: highlightFolder,
+        onDragBlock: showLibraryDropZone,
         onNodeDropOnFolder: saveNodeToFolder,
     });
 
@@ -592,9 +594,23 @@ function onCreateBlockAt(at) {
     ta?.focus();
 }
 
-function highlightFolder(folderEl) {
+function highlightFolder(target) {
     for (const f of root.querySelectorAll('.pc-folder-target')) f.classList.remove('pc-folder-target');
-    if (folderEl && folderEl.dataset.folder) folderEl.classList.add('pc-folder-target');
+    const side = root.querySelector('.pc-sidebar');
+    side?.classList.toggle('pc-drop-ready', !!target);
+    if (!target) return;
+    // Anywhere on the library that is not a folder files it in the first one.
+    const folder = target.dataset?.folder
+        ? target
+        : root.querySelector(`.pc-folder[data-folder="${CSS.escape(L.folders()[0]?.id ?? '')}"]`);
+    folder?.classList.add('pc-folder-target');
+    const name = folder?.querySelector('.pc-folder-head span')?.textContent ?? 'the library';
+    if (side) side.dataset.dropHint = `Drop to save to \u201c${name}\u201d`;
+}
+
+/** While a block is dragged, the library says it can take it. */
+export function showLibraryDropZone(on) {
+    root?.querySelector('.pc-sidebar')?.classList.toggle('pc-drop-zone', !!on);
 }
 
 /**
@@ -602,8 +618,9 @@ function highlightFolder(folderEl) {
  * back where it was: you are filing a copy, not moving the block off the canvas.
  */
 function saveNodeToFolder(node, folderId) {
-    if (!folderId) {
-        toast('SillyTavern\u2019s own prompts live in your preset, not the library.', 'error');
+    folderId = folderId || L.folders()[0]?.id || null;
+    if (node.type !== NODE_TYPES.PROMPT && node.type !== NODE_TYPES.ST && node.type !== NODE_TYPES.GENERATE) {
+        toast(`Only prompt text can be saved to the library; "${node.title}" is a ${node.type} block.`, 'warning');
         return;
     }
     const content = node.type === NODE_TYPES.ST
@@ -1157,9 +1174,9 @@ function renderGenerateFields(box, node) {
     if (node.showInChat !== false) {
         const label = el('input', 'text_pole');
         label.value = node.label ?? '';
-        label.placeholder = 'Notes';
+        label.placeholder = 'optional';
         label.addEventListener('input', () => { node.label = label.value; touch(); });
-        box.append(field('Folded under the heading', label));
+        box.append(field('Extra heading in the chat', label, 'The block\u2019s name is always shown; this is added beside it.'));
     }
 }
 
@@ -1637,8 +1654,7 @@ function renderModelPicker(box, node) {
     const source = sourceForBlock(node);
     const fromUi = source ? modelsForSource(source) : [];
     const models = fromUi.length ? fromUi : cachedModels(source);
-    const info = inspectProfile(node.profileId || null);
-    const inherited = info.model || safe(() => ctx().getChatCompletionModel()) || null;
+    const inherited = effectiveModel({ ...node, model: null });
 
     const wrap = el('div', 'pc-model-picker');
 
@@ -1810,7 +1826,9 @@ function renderPreview(plan) {
         const bits = [`${stage.messages.length} message${stage.messages.length === 1 ? '' : 's'}`];
         if (stage.tokens) bits.push(`${stage.tokens.toLocaleString()} tokens`);
         if (!stage.final) {
-            bits.push(profileName(stage.profileId) ?? 'same connection as the chat');
+            bits.push(profileName(stage.profileId) ?? 'same as the chat');
+            const m = effectiveModel(stage.node ?? { profileId: stage.profileId });
+            if (m) bits.push(m);
             bits.push(`max ${stage.maxTokens}`);
         }
         meta.textContent = bits.join(' \u00b7 ');

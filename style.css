@@ -254,7 +254,18 @@
 }
 
 .pc-node.pc-selected { border-color: var(--SmartThemeQuoteColor, #7ab7ff); box-shadow: 0 0 0 2px var(--SmartThemeQuoteColor, #7ab7ff); }
-.pc-node.pc-off { opacity: 0.45; }
+.pc-node.pc-off {
+    opacity: 0.8;
+    border-style: dashed;
+    border-color: rgba(224, 143, 143, 0.7);
+    background-image: repeating-linear-gradient(135deg, rgba(0, 0, 0, 0) 0 10px, rgba(224, 143, 143, 0.07) 10px 20px);
+}
+.pc-node.pc-off .pc-node-body, .pc-node.pc-off .pc-badge, .pc-node.pc-off .pc-node-title { filter: grayscale(1); opacity: 0.55; }
+.pc-node.pc-off .pc-node-body { text-decoration: line-through; text-decoration-color: rgba(224, 143, 143, 0.6); }
+.pc-off-pill { margin-left: 4px; padding: 0 6px; border-radius: 8px; font-size: 10px; font-weight: 700; letter-spacing: 0.05em; background: #e08f8f; color: #1a1a1e; }
+.pc-toggle-on { color: #7fd18c; opacity: 1 !important; font-size: 1.15em; }
+.pc-toggle-off { color: #e08f8f; opacity: 1 !important; font-size: 1.15em; }
+.pc-wire-off { opacity: 0.3; stroke-dasharray: 2 6; }
 .pc-node.pc-trace-in { border-left: 3px solid #7fd18c; }
 .pc-node.pc-trace-skipped { border-left: 3px solid #f0c36a; }
 .pc-node.pc-trace-off { border-left: 3px solid rgba(255, 255, 255, 0.25); }
@@ -773,3 +784,16 @@
 .pc-dest-x { cursor: pointer; opacity: 0.6; }
 .pc-dest-x:hover { opacity: 1; }
 .pc-dest-none { font-style: italic; }
+.pc-thought-sub { font-weight: 400; opacity: 0.6; font-size: 0.9em; }
+
+/* ---- dragging a block to the library to save it ------------------- */
+.pc-sidebar { position: relative; }
+.pc-sidebar.pc-drop-zone { outline: 2px dashed rgba(127, 209, 140, 0.55); outline-offset: -4px; }
+.pc-sidebar.pc-drop-zone::before {
+    content: 'Drag here to save to the library';
+    position: sticky; top: 0; z-index: 3; display: block;
+    padding: 6px 8px; border-radius: 6px; text-align: center; font-size: 0.85em;
+    background: rgba(127, 209, 140, 0.18); color: #7fd18c;
+}
+.pc-sidebar.pc-drop-zone.pc-drop-ready { outline-color: #7fd18c; background: rgba(127, 209, 140, 0.06); }
+.pc-sidebar.pc-drop-zone.pc-drop-ready::before { content: attr(data-drop-hint); background: rgba(127, 209, 140, 0.32); font-weight: 600; }

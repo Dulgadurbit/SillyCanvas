@@ -22,8 +22,8 @@
  * no exceptions, because a graph you have to trace to predict is not a tool.
  */
 
-import { ctx, safe, NODE_TYPES, WIRE_KINDS, wiresInto, wiresOutOf, outputNode, togetherGroup, groupWires, deciderKeys } from './state.js?v=0.5.0';
-import { stPrompt, MARKER_SOURCES } from './library.js?v=0.5.0';
+import { ctx, safe, NODE_TYPES, WIRE_KINDS, wiresInto, wiresOutOf, outputNode, togetherGroup, groupWires, deciderKeys } from './state.js?v=0.6.0';
+import { stPrompt, MARKER_SOURCES } from './library.js?v=0.6.0';
 
 /* ------------------------------------------------------------------ */
 /* live context                                                        */

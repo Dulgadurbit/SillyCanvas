@@ -13,7 +13,7 @@
 
 import {
     NODE_TYPES, WIRE_KINDS, connect, disconnect, removeNode, touchGraph, wiresInto, deciderKeys,
-} from './state.js?v=0.5.0';
+} from './state.js?v=0.6.0';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -253,11 +253,18 @@ export class Canvas {
         title.title = node.title || '';
 
         head.append(badge, title);
+        if (node.enabled === false) {
+            const off = document.createElement('span');
+            off.className = 'pc-off-pill';
+            off.textContent = 'OFF';
+            off.title = 'This block is switched off. Its own text is not sent; anything wired through it still passes.';
+            head.append(off);
+        }
 
         if (node.type !== NODE_TYPES.OUTPUT) {
             const toggle = document.createElement('div');
-            toggle.className = `pc-toggle fa-solid ${node.enabled === false ? 'fa-toggle-off' : 'fa-toggle-on'}`;
-            toggle.title = node.enabled === false ? 'Switched off' : 'Switched on';
+            toggle.className = `pc-toggle fa-solid ${node.enabled === false ? 'fa-toggle-off pc-toggle-off' : 'fa-toggle-on pc-toggle-on'}`;
+            toggle.title = node.enabled === false ? 'Switched off \u2014 click to switch on' : 'Switched on \u2014 click to switch off';
             toggle.addEventListener('mousedown', e => e.stopPropagation());
             toggle.addEventListener('click', (e) => {
                 e.stopPropagation();
@@ -306,10 +313,12 @@ export class Canvas {
             const model = document.createElement('div');
             model.className = 'pc-node-model';
             const name = this.hooks.profileName?.(node.profileId) ?? null;
-            const where = name ?? (node.profileId ? node.profileId : 'same connection as the chat');
-            model.innerHTML = node.model
-                ? `<i class="fa-solid fa-microchip"></i> ${where} \u00b7 <b>${node.model}</b>`
+            const where = name ?? (node.profileId ? node.profileId : 'same as the chat');
+            const actual = node.type === NODE_TYPES.GENERATE ? (this.hooks.effectiveModel?.(node) ?? node.model) : node.model;
+            model.innerHTML = actual
+                ? `<i class="fa-solid fa-microchip"></i> ${where} \u00b7 <b>${actual}</b>`
                 : `<i class="fa-solid fa-microchip"></i> ${where}`;
+            model.title = node.model ? 'This block\u2019s own model.' : node.profileId ? 'The model this connection profile uses.' : 'Follows whatever model the chat is using right now.';
             el.append(model);
         }
 
@@ -592,7 +601,8 @@ export class Canvas {
             const isKey = srcNode?.type === NODE_TYPES.DECIDER;
             const chosen = isKey ? this.trace?.get(wire.from)?.decision : undefined;
             const untaken = isKey && chosen !== undefined && chosen !== null && chosen !== wire.port;
-            path.setAttribute('class', `pc-wire pc-wire-${wire.kind}${isKey ? ' pc-wire-key' : ''}${untaken ? ' pc-wire-untaken' : ''}${this.selection?.kind === 'wire' && this.selection.id === wire.id ? ' pc-selected' : ''}`);
+            const offWire = this.graph.nodes[wire.from]?.enabled === false || this.graph.nodes[wire.to]?.enabled === false;
+            path.setAttribute('class', `pc-wire pc-wire-${wire.kind}${isKey ? ' pc-wire-key' : ''}${untaken ? ' pc-wire-untaken' : ''}${offWire ? ' pc-wire-off' : ''}${this.selection?.kind === 'wire' && this.selection.id === wire.id ? ' pc-selected' : ''}`);
 
             const label = document.createElementNS(SVG_NS, 'text');
             label.setAttribute('class', 'pc-wire-label');
@@ -708,14 +718,18 @@ export class Canvas {
                 if (!node) return;
                 node.x = Math.round(p.x - this.drag.dx);
                 node.y = Math.round(p.y - this.drag.dy);
+                if (!this.drag.moved) this.hooks.onDragBlock?.(true);
                 this.drag.moved = true;
                 const el = this.nodeLayer.querySelector(`.pc-node[data-id="${CSS.escape(node.id)}"]`);
                 if (el) { el.style.left = `${node.x}px`; el.style.top = `${node.y}px`; }
                 this.#drawWires();
 
-                // Dragging a block out over a library folder means "save it there".
+                // Dragging a block out over the library means "save it there":
+                // into the folder under the pointer, or the first folder when
+                // it is dropped anywhere else on the library.
                 const under = document.elementFromPoint(e.clientX, e.clientY);
-                const folder = under?.closest?.('.pc-folder[data-folder]') ?? null;
+                const folder = under?.closest?.('.pc-folder[data-folder]:not([data-folder=""])')
+                    ?? under?.closest?.('.pc-sidebar') ?? null;
                 if (folder !== this.drag.overFolder) {
                     this.drag.overFolder = folder;
                     this.hooks.onNodeOverFolder?.(folder);
@@ -758,13 +772,14 @@ export class Canvas {
                 const drop = this.drag;
                 this.drag = null;
                 this.hooks.onNodeOverFolder?.(null);
+                if (drop.moved) this.hooks.onDragBlock?.(false);
 
                 if (drop.overFolder) {
                     const node = this.graph.nodes[drop.id];
                     if (node) {
                         node.x = drop.homeX;
                         node.y = drop.homeY;
-                        this.hooks.onNodeDropOnFolder?.(node, drop.overFolder.dataset.folder);
+                        this.hooks.onNodeDropOnFolder?.(node, drop.overFolder.dataset.folder || null);
                     }
                 } else if (drop.moved) {
                     touchGraph(this.graph);
