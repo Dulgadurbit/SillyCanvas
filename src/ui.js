@@ -13,11 +13,11 @@ import {
     addNode, removeNode, outputNode, connect, disconnect, resolveGraph,
     chatBinding, setChatBinding, characterBinding, setCharacterBinding,
     exportGraph, importGraph, blankGraph, isFolderCollapsed, setFolderCollapsed, togetherGroup,
-} from './state.js?v=0.2.0';
-import * as L from './library.js?v=0.2.0';
-import { compile, gatherContext, resolveNode, textOf, generateLevels, emissionCounts } from './compile.js?v=0.2.0';
-import { run, profileName, callCount, testBlock, shapeForApi, inspectProfile, modelsForSource, sourceForBlock, cachedModels, fetchModelList, previewBlock } from './run.js?v=0.2.0';
-import { Canvas, WIRE_LABEL, TYPE_LABEL } from './canvas.js?v=0.2.0';
+} from './state.js?v=0.3.0';
+import * as L from './library.js?v=0.3.0';
+import { compile, gatherContext, resolveNode, textOf, generateLevels, emissionCounts } from './compile.js?v=0.3.0';
+import { run, profileName, callCount, testBlock, shapeForApi, inspectProfile, modelsForSource, sourceForBlock, cachedModels, fetchModelList, previewBlock } from './run.js?v=0.3.0';
+import { Canvas, WIRE_LABEL, TYPE_LABEL } from './canvas.js?v=0.3.0';
 
 let root = null;
 let canvas = null;
@@ -97,7 +97,7 @@ function waveInfo(node) {
         if (!wave.some(n => n.id === node.id)) continue;
         const group = togetherGroup(current, node.id);
         const tied = wave.some(n => n.id !== node.id && group.has(n.id));
-        const auto = safe(() => settings().parallel) !== false;
+        const auto = true;
         return {
             wave: i + 1,
             waves: waves.length,
@@ -364,19 +364,6 @@ function renderStatus() {
     setDefault.innerHTML = `<i class="fa-solid fa-star"></i> ${isDefault ? 'Default canvas' : 'Make default'}`;
     setDefault.addEventListener('click', () => { settings().activeGraphId = current.id; save(); renderStatus(); });
 
-    const auto = safe(() => settings().parallel) !== false;
-    const par = el('div', `pc-btn menu_button${auto ? ' pc-on' : ''}`);
-    par.innerHTML = `<i class="fa-solid ${auto ? 'fa-bolt' : 'fa-bolt-slash'}"></i> ${auto ? 'Parallel on' : 'Parallel off'}`;
-    par.title = auto
-        ? 'Independent Generate blocks go out at the same time'
-        : 'Generate blocks go out one at a time, unless you have tied them';
-    par.addEventListener('click', () => {
-        settings().parallel = !auto;
-        save();
-        renderStatus();
-        canvas.render();
-    });
-    s.append(par);
 
     const previewBtn = el('div', 'pc-btn menu_button pc-primary');
     previewBtn.innerHTML = '<i class="fa-solid fa-eye"></i> Preview prompt';

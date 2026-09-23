@@ -61,4 +61,41 @@ assert.deepEqual(got, ['g1']);
 calls = 0;
 await run(graph(), { dryRun: true });
 assert.equal(calls, 0);
+
+// 4. provider refuses simultaneous requests: parallel pair fails, each works
+//    alone -> both answered, limit dropped to one, run reports throttled
+let inFlight = 0;
+const live = new Set();
+c.ChatCompletionService.processRequest = async () => {
+    const me = { overlapped: inFlight > 0 };
+    for (const o of live) o.overlapped = true;
+    live.add(me); inFlight++;
+    await new Promise(r => setTimeout(r, 10));
+    live.delete(me); inFlight--;
+    const busy = me.overlapped;
+    if (busy) throw new Error('429 too many concurrent requests');
+    return { choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] };
+};
+const par = {
+    nodes: {
+        out: n('out', 'output', 900),
+        q: n('q', 'prompt', 10, { content: 'Q', role: 'user' }),
+        a1: n('a1', 'generate', 100, { content: 'a' }),
+        a2: n('a2', 'generate', 100, { content: 'b' }),
+    },
+    wires: {
+        w1: { id: 'w1', from: 'q', to: 'a1', kind: 'merge' },
+        w2: { id: 'w2', from: 'q', to: 'a2', kind: 'merge' },
+        w3: { id: 'w3', from: 'a1', to: 'out', kind: 'merge' },
+        w4: { id: 'w4', from: 'a2', to: 'out', kind: 'merge' },
+    },
+};
+c.extensionSettings['prompt-canvas'].concurrency = 2;
+const r4 = await run(par);
+assert.equal(r4.throttled, true);
+assert.equal(r4.failures.length, 0);
+assert.equal(c.extensionSettings['prompt-canvas'].concurrency, 1);
+assert.deepEqual(r4.plan.messages.map(m => m.content), ['ok', 'ok']);
+// the inspector gets exactly what was sent
+assert.ok(r4.thoughts.every(t => Array.isArray(t.prompt) && t.prompt.length));
 console.log('live-and-stop: ok');

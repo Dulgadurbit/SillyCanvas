@@ -44,4 +44,29 @@ assert.equal(document.querySelector('.pc-live'), null);
 attachThoughts(0, [{ title: 'Scene', text: 'THE SCENE PLAN' }]);
 assert.ok(document.querySelector('.mes .pc-thoughts').textContent.includes('THE SCENE PLAN'));
 assert.equal(c.chat.length, 1, 'nothing added to chat[]');
+
+// prompt inspector: present, built lazily, long text clipped with Show all
+const long = 'x'.repeat(3000);
+livePanel.result({ id: 'g9', title: 'Plan', text: 'P', show: true, prompt: [{ role: 'system', content: 'SYS' }, { role: 'user', content: long }] });
+const insp = document.querySelector('.pc-live .pc-thought-prompt');
+assert.ok(insp, 'inspector shown');
+assert.match(insp.querySelector('summary').textContent, /2 messages, 3,003 characters/);
+assert.equal(insp.querySelectorAll('.pc-tp-msg').length, 0, 'not built until opened');
+insp.open = true; insp.dispatchEvent(new dom.window.Event('toggle'));
+assert.equal(insp.querySelectorAll('.pc-tp-msg').length, 2);
+assert.ok(insp.querySelector('.pc-tp-text:last-of-type, .pc-tp-msg:last-child .pc-tp-text').textContent.length < 1600);
+insp.querySelector('.pc-tp-more').click();
+assert.equal(insp.querySelector('.pc-tp-msg:last-child .pc-tp-text').textContent.length, 3000);
+// attached to a message: inspector survives the fold, prompt not saved to the chat file
+handlers.MESSAGE_RECEIVED.forEach(f => f(0));
+attachThoughts(0, [{ title: 'Plan', text: 'P', prompt: [{ role: 'user', content: 'Q' }] }]);
+assert.ok(document.querySelector('.mes .pc-thought-prompt'), 'inspector under reply');
+assert.equal(c.chat[0].extra.promptCanvas.thoughts[0].prompt, undefined, 'prompt not persisted');
+
+// a chat-completion send fires both hooks; only one may build
+c.mainApi = 'openai';
+const ev = { prompt: 'orig', dryRun: false };
+c.extensionSettings['prompt-canvas'].enabled = true;
+await Promise.all(handlers.GENERATE_AFTER_COMBINE_PROMPTS.map(f => f(ev)));
+assert.equal(ev.prompt, 'orig', 'text hook stays out of chat completion');
 console.log('dom: ok');

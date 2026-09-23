@@ -11,9 +11,17 @@
  * later turn — only the canvas decides what gets sent.
  */
 
-import { ctx, safe } from './state.js?v=0.2.0';
+import { ctx, safe } from './state.js?v=0.3.0';
 
 const KEY = 'promptCanvas';
+
+/**
+ * The prompt each answer was asked with, kept in memory only. A prompt with
+ * the chat history in it can be larger than the reply many times over, and
+ * saving one per block per turn would swell the chat file quickly — so it is
+ * there to inspect for this session, and gone after a reload.
+ */
+const prompts = new WeakMap();
 
 /** Attach this turn's Generate answers to the message they produced. */
 export function attachThoughts(messageId, thoughts) {
@@ -23,6 +31,7 @@ export function attachThoughts(messageId, thoughts) {
     if (!message || !Array.isArray(thoughts) || !thoughts.length) return;
 
     message.extra ??= {};
+    prompts.set(message, thoughts.map(t => t.prompt ?? null));
     message.extra[KEY] = {
         at: Date.now(),
         thoughts: thoughts.map(t => ({
@@ -59,7 +68,8 @@ export function renderThoughts(messageId) {
     const block = document.createElement('div');
     block.className = 'pc-thoughts';
 
-    for (const t of data.thoughts) block.append(thoughtElement(t));
+    const asked = prompts.get(c.chat[id]) ?? [];
+    data.thoughts.forEach((t, i) => block.append(thoughtElement(t, { prompt: asked[i] ?? null })));
 
     const target = mes.querySelector('.mes_block .mes_text') ?? mes.querySelector('.mes_text');
     if (target) target.before(block);
@@ -89,7 +99,7 @@ export function clearThoughts(messageId) {
  * One answer as a folded <details>. Shared by the finished view under a reply
  * and the live panel shown while blocks run, so the two look the same.
  */
-function thoughtElement(t, { open = false, pending = false } = {}) {
+function thoughtElement(t, { open = false, pending = false, prompt = t.prompt ?? null } = {}) {
     const details = document.createElement('details');
     details.className = `pc-thought${t.failed ? ' pc-thought-failed' : ''}${pending ? ' pc-thought-pending' : ''}`;
     details.open = open;
@@ -128,7 +138,53 @@ function thoughtElement(t, { open = false, pending = false } = {}) {
         : (t.text ?? '');
 
     details.append(summary, body);
+    if (Array.isArray(prompt) && prompt.length) details.append(promptInspector(prompt));
     return details;
+}
+
+/** How much of one message to show before "Show all". */
+const CLIP = 1500;
+
+/**
+ * "What this block was asked": every message that went to the model, with
+ * its role. Built only when opened, so a long chat history costs nothing
+ * until you look at it.
+ */
+function promptInspector(messages) {
+    const box = document.createElement('details');
+    box.className = 'pc-thought-prompt';
+    const chars = messages.reduce((n, m) => n + String(m.content ?? '').length, 0);
+    const sum = document.createElement('summary');
+    sum.innerHTML = '<i class="fa-solid fa-magnifying-glass"></i> ';
+    sum.append(`What it was asked · ${messages.length} message${messages.length === 1 ? '' : 's'}, ${chars.toLocaleString()} characters`);
+    box.append(sum);
+
+    box.addEventListener('toggle', () => {
+        if (!box.open || box.dataset.built) return;
+        box.dataset.built = '1';
+        for (const m of messages) {
+            const row = document.createElement('div');
+            row.className = `pc-tp-msg pc-tp-${m.role || 'system'}`;
+            const role = document.createElement('div');
+            role.className = 'pc-tp-role';
+            role.textContent = (m.role || 'system') + (m.name ? ` · ${m.name}` : '');
+            const text = document.createElement('div');
+            text.className = 'pc-tp-text';
+            const full = String(m.content ?? '');
+            text.textContent = full.length > CLIP ? full.slice(0, CLIP) + '…' : full;
+            row.append(role, text);
+            if (full.length > CLIP) {
+                const more = document.createElement('a');
+                more.className = 'pc-tp-more';
+                more.href = 'javascript:void(0)';
+                more.textContent = `Show all ${full.length.toLocaleString()} characters`;
+                more.addEventListener('click', (e) => { e.preventDefault(); text.textContent = full; more.remove(); });
+                row.append(more);
+            }
+            box.append(row);
+        }
+    });
+    return box;
 }
 
 /**

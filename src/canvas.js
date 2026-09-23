@@ -13,7 +13,7 @@
 
 import {
     NODE_TYPES, WIRE_KINDS, connect, disconnect, removeNode, touchGraph, wiresInto,
-} from './state.js?v=0.2.0';
+} from './state.js?v=0.3.0';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -299,6 +299,15 @@ export class Canvas {
                     ? 'The model\u2019s reply leaves from here. It does not go back into this block.'
                     : 'Drag to wire this block into another';
                 el.append(outPort);
+
+                // The whole bottom edge is a handle too, so starting a wire
+                // does not mean hunting for a 13px dot.
+                const strip = document.createElement('div');
+                strip.className = 'pc-port pc-port-strip';
+                strip.dataset.node = node.id;
+                strip.dataset.dir = 'out';
+                strip.title = 'Drag from the bottom edge to wire this block into another';
+                el.append(strip);
             }
             const inPort = document.createElement('div');
             inPort.className = 'pc-port pc-port-in';
@@ -372,6 +381,37 @@ export class Canvas {
             default:
                 return '';
         }
+    }
+
+    #nodeEl(id) {
+        return id ? this.nodeLayer.querySelector(`.pc-node[data-id="${CSS.escape(id)}"]`) : null;
+    }
+
+    /**
+     * Which block a wire being drawn would connect to: the block under the
+     * pointer (anywhere on it, not just its port), or failing that the
+     * nearest port within a generous reach, so a near miss still lands.
+     */
+    #linkTarget(e) {
+        const link = this.linking;
+        if (!link) return null;
+        const under = document.elementFromPoint?.(e.clientX, e.clientY) ?? e.target;
+        const hit = under?.closest?.('.pc-port')?.dataset.node ?? under?.closest?.('.pc-node')?.dataset.id ?? null;
+        if (hit && hit !== link.nodeId) return hit;
+
+        const p = this.toGraph(e.clientX, e.clientY);
+        const reach = 36 / (this.view?.zoom || 1);
+        let best = null, bestD = reach;
+        for (const n of Object.values(this.graph.nodes)) {
+            if (n.id === link.nodeId || n.type === NODE_TYPES.NOTE) continue;
+            if (link.dir === 'tie' && n.type !== NODE_TYPES.GENERATE) continue;
+            const q = link.dir === 'tie'
+                ? this.#sidePos(n.id, p.x < n.x + (n.w || 260) / 2 ? 'left' : 'right')
+                : this.#portPos(n.id, link.dir === 'out' ? 'in' : 'out');
+            const d = Math.hypot(q.x - p.x, q.y - p.y);
+            if (d < bestD) { bestD = d; best = n.id; }
+        }
+        return best;
     }
 
     /** Port centre in graph coordinates. */
@@ -535,6 +575,14 @@ export class Canvas {
             if (this.linking) {
                 this.linking.ghost = this.toGraph(e.clientX, e.clientY);
                 this.#drawWires();
+                // Light up the block the wire would land on, so you can see
+                // the drop will take before you let go.
+                const target = this.#linkTarget(e);
+                if (target !== this.linking.hover) {
+                    this.#nodeEl(this.linking.hover)?.classList.remove('pc-link-target');
+                    this.linking.hover = target;
+                    this.#nodeEl(target)?.classList.add('pc-link-target');
+                }
                 return;
             }
             if (this.drag) {
@@ -567,10 +615,9 @@ export class Canvas {
 
         window.addEventListener('mouseup', (e) => {
             if (this.linking) {
-                const port = e.target.closest?.('.pc-port');
-                const nodeEl = e.target.closest?.('.pc-node');
-                const targetId = port?.dataset.node ?? nodeEl?.dataset.id ?? null;
+                const targetId = this.#linkTarget(e);
                 const link = this.linking;
+                this.#nodeEl(link.hover)?.classList.remove('pc-link-target');
                 this.linking = null;
                 this.host.classList.remove('pc-tying');
 

@@ -16,8 +16,8 @@
  *    recorded as the error, the run continues, and you see it in the trace.
  */
 
-import { ctx, safe, settings, NODE_TYPES, togetherGroup } from './state.js?v=0.2.0';
-import { compile, collect, generateOrder, generateLevels, gatherContext, evaluateCondition } from './compile.js?v=0.2.0';
+import { ctx, safe, settings, save as saveSettings, NODE_TYPES, togetherGroup } from './state.js?v=0.3.0';
+import { compile, collect, generateOrder, generateLevels, gatherContext, evaluateCondition } from './compile.js?v=0.3.0';
 
 /** The connection the chat itself is using, when a block does not name one. */
 function currentProfileId() {
@@ -420,13 +420,16 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
     const thoughts = [];
     const failures = [];
     const cutoffs = [];
+    const rescued = [];
 
     if (dryRun) {
         const plan = await compile(graph, { dryRun, live, results });
         return { plan, results, thoughts, failures };
     }
 
-    const parallel = safe(() => settings().parallel) !== false;
+    // Independent blocks always go out together, up to the limit. If the
+    // provider refuses that, the fallback below drops the limit to one.
+    const parallel = true;
     const atOnce = Math.max(1, Number(safe(() => settings().concurrency)) || DEFAULT_AT_ONCE);
     const waves = generateLevels(graph);
     const total = waves.reduce((n, w) => n + w.length, 0);
@@ -450,7 +453,7 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
             try {
                 const reply = await askModel(built.messages, gen, signal);
                 results[gen.id] = reply.text;
-                record(gen, reply.text, null, Date.now() - startedAt, built.messages.length, reply);
+                record(gen, reply.text, null, Date.now() - startedAt, built.messages, reply);
                 const cutoff = describeCutoff(gen.title, reply.usage, reply.finish);
                 if (cutoff) cutoffs.push(cutoff);
                 return { node: gen, ok: true };
@@ -469,14 +472,16 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
                 // A failed block contributes NOTHING. It must never quietly
                 // paste its own error message into the prompt you actually send.
                 results[gen.id] = '';
-                record(gen, '', why, Date.now() - startedAt, built.messages.length);
+                record(gen, '', why, Date.now() - startedAt, built.messages);
                 return { node: gen, ok: false, error: why };
             }
         }
         return null;
     }
 
-    function record(gen, text, failed, ms, promptMessages, reply = null) {
+    function record(gen, text, failed, ms, sentMessages, reply = null) {
+        // Exactly what went to the model, after shaping, for the inspector.
+        const prompt = safe(() => shapeForApi(sentMessages).messages, sentMessages) ?? [];
         const at = thoughts.findIndex(t => t.id === gen.id);
         const entry = {
             id: gen.id,
@@ -487,7 +492,8 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
             ms,
             show: gen.showInChat !== false,
             profile: profileName(gen.profileId || currentProfileId()),
-            promptMessages,
+            promptMessages: prompt.length,
+            prompt,
             model: gen.model || inspectProfile(gen.profileId || currentProfileId()).model || null,
             usage: reply?.usage ?? null,
             finish: reply?.finish ?? null,
@@ -521,6 +527,7 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
                     const again = await ask(gen, { retries: 0 });
                     if (again?.aborted) break;
                     if (again && !again.ok) failures.push({ title: gen.title, error: again.error });
+                    if (again?.ok) rescued.push(gen.title);
                 }
             }
         } else {
@@ -545,7 +552,16 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
         plan.warnings.push(`"${f.title}" failed, so it added nothing to this prompt: ${f.error}`);
     }
     for (const c of cutoffs) plan.warnings.push(c);
-    return { plan, results, thoughts, failures, cutoffs };
+
+    // Failed side by side, worked alone: the provider limits simultaneous
+    // requests. Send one at a time from now on (ties excepted — those are
+    // yours), and say so rather than failing quietly every turn.
+    let throttled = false;
+    if (rescued.length && atOnce > 1) {
+        safe(() => { settings().concurrency = 1; saveSettings(); });
+        throttled = true;
+    }
+    return { plan, results, thoughts, failures, cutoffs, rescued, throttled };
 }
 
 /** How many requests go out at once within one wave, unless you change it. */
@@ -647,8 +663,6 @@ export function callCount(graph) {
 /** How many round trips that is, once independent blocks go out together. */
 export function roundTrips(graph) {
     const waves = generateLevels(graph);
-    const parallel = safe(() => settings().parallel) !== false;
-    if (!parallel) return waves.reduce((n, w) => n + w.length, 0);
     const atOnce = Math.max(1, Number(safe(() => settings().concurrency)) || DEFAULT_AT_ONCE);
     return waves.reduce((n, w) => n + Math.ceil(w.length / atOnce), 0);
 }

@@ -16,10 +16,10 @@
  * generation is worse than one that does nothing.
  */
 
-import { settings, save, resolveGraph, ctx, safe } from './src/state.js?v=0.2.0';
-import { run, callCount } from './src/run.js?v=0.2.0';
-import * as UI from './src/ui.js?v=0.2.0';
-import { renderThoughts, attachThoughts, repaintAll, livePanel } from './src/thoughts.js?v=0.2.0';
+import { settings, save, resolveGraph, ctx, safe } from './src/state.js?v=0.3.0';
+import { run, callCount } from './src/run.js?v=0.3.0';
+import * as UI from './src/ui.js?v=0.3.0';
+import { renderThoughts, attachThoughts, repaintAll, livePanel } from './src/thoughts.js?v=0.3.0';
 
 const MODULE = 'prompt-canvas';
 let lastRun = null;
@@ -62,7 +62,7 @@ async function build(dryRun) {
         if (!dryRun) { livePanel.clear(); pendingThoughts = null; }
         const abort = dryRun ? null : new AbortController();
         currentAbort = abort;
-        const { plan, thoughts, failures, aborted } = await run(graph, {
+        const { plan, thoughts, failures, aborted, rescued, throttled } = await run(graph, {
             dryRun,
             signal: abort?.signal ?? null,
             onStage: (node) => { progress.running(node.title); safe(() => livePanel.running(node)); },
@@ -95,6 +95,11 @@ async function build(dryRun) {
 
         if (!dryRun && thoughts.some(t => t.show && (String(t.text || '').trim() || t.failed))) {
             pendingThoughts = thoughts.filter(t => t.show);
+        }
+
+        if (throttled) {
+            warn(`${rescued.length === 1 ? `"${rescued[0]}" was` : `${rescued.length} Generate blocks were`} refused when sent at the same time as another block, but worked on ${rescued.length === 1 ? 'its' : 'their'} own. Your provider seems to limit simultaneous requests, so from now on independent blocks go out one at a time. Blocks you tied together still go at once \u2014 untie them if they keep failing. You can switch this back in the extension settings.`);
+            safe(() => paintThrottle());
         }
 
         for (const f of failures ?? []) {
@@ -270,19 +275,11 @@ function addLauncher() {
                     <div class="pc-settings-hint">
                         While this is off SillyTavern behaves exactly as it always has.
                     </div>
-                    <label class="checkbox_label" for="pc-parallel">
-                        <input id="pc-parallel" type="checkbox">
-                        <span>Send independent Generate blocks at the same time</span>
-                    </label>
-                    <div class="pc-settings-hint">
-                        Faster when a canvas has several Generate blocks that do not feed each
-                        other. If one fails, it is tried again on its own before giving up.
-                    </div>
-                    <label for="pc-concurrency">How many at once</label>
-                    <input id="pc-concurrency" class="text_pole" type="number" min="1" max="8">
-                    <div class="pc-settings-hint">
-                        Lower this if your provider or proxy refuses concurrent requests.
-                        Two is a safe starting point.
+                    <div id="pc-throttled" class="pc-settings-hint pc-throttled" hidden>
+                        <i class="fa-solid fa-triangle-exclamation"></i>
+                        Generate blocks are being sent one at a time, because your provider
+                        refused several at once.
+                        <a id="pc-unthrottle" href="javascript:void(0)">Try sending them together again</a>
                     </div>
                     <label class="checkbox_label" for="pc-sendbar-opt">
                         <input id="pc-sendbar-opt" type="checkbox">
@@ -314,17 +311,13 @@ function addLauncher() {
             save();
             addSendbarButton();
         });
-        const conc = block.querySelector('#pc-concurrency');
-        conc.value = safe(() => settings().concurrency) ?? 2;
-        conc.addEventListener('change', () => {
-            settings().concurrency = Math.max(1, Math.min(8, Number(conc.value) || 2));
-            conc.value = settings().concurrency;
+        paintThrottle();
+        block.querySelector('#pc-unthrottle').addEventListener('click', () => {
+            settings().concurrency = 2;
             save();
+            paintThrottle();
+            safe(() => globalThis.toastr?.info('Independent Generate blocks will go out together again.', 'Silly Canvas'));
         });
-
-        const par = block.querySelector('#pc-parallel');
-        par.checked = safe(() => settings().parallel) !== false;
-        par.addEventListener('change', () => { settings().parallel = par.checked; save(); });
 
         block.querySelector('#pc-open-btn').addEventListener('click', () => UI.open());
     }
@@ -386,6 +379,11 @@ function paintSendbar() {
         : r.graph
             ? `Prompt Canvas is armed: "${r.graph.name}" (${from}) builds the prompt.\nClick to open. Right-click to switch off.`
             : 'Prompt Canvas is armed but no canvas applies here, so SillyTavern builds the prompt.\nClick to open. Right-click to switch off.';
+}
+
+function paintThrottle() {
+    const box = document.getElementById('pc-throttled');
+    if (box) box.hidden = !(Number(safe(() => settings().concurrency)) === 1);
 }
 
 /**
