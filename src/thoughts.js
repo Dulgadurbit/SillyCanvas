@@ -1,5 +1,5 @@
 /**
- * Prompt Canvas — showing a Generate block's answer under the reply.
+ * Silly Canvas — showing a Generate block's answer under the reply.
  *
  * When a canvas asks the model something before the real send, that answer is
  * part of how the reply came to be. It is kept with the message and folded
@@ -11,7 +11,7 @@
  * later turn — only the canvas decides what gets sent.
  */
 
-import { ctx, safe } from './state.js?v=0.8.0';
+import { ctx, safe } from './state.js?v=0.9.0';
 
 const KEY = 'promptCanvas';
 

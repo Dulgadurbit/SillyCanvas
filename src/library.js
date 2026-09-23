@@ -1,5 +1,5 @@
 /**
- * Prompt Canvas — the prompt library.
+ * Silly Canvas — the prompt library.
  *
  * Two kinds of entry live side by side in the sidebar:
  *
@@ -17,7 +17,7 @@
  * differently and the compiler knows to resolve them from live context.
  */
 
-import { ctx, settings, save, uid, safe } from './state.js?v=0.8.0';
+import { ctx, settings, save, uid, safe } from './state.js?v=0.9.0';
 
 export const ST_FOLDER_ID = '__sillytavern__';
 

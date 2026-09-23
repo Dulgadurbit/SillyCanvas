@@ -1,5 +1,5 @@
 /**
- * Prompt Canvas — the executor.
+ * Silly Canvas — the executor.
  *
  * Walks the Generate blocks in canvas order, asks the model each one's
  * question, and feeds each answer into whatever sits below it. The final
@@ -16,8 +16,8 @@
  *    recorded as the error, the run continues, and you see it in the trace.
  */
 
-import { ctx, safe, settings, save as saveSettings, NODE_TYPES, togetherGroup } from './state.js?v=0.8.0';
-import { compile, collect, generateOrder, generateLevels, gatherContext, evaluateCondition, liveNodes, generateDeps } from './compile.js?v=0.8.0';
+import { ctx, safe, settings, save as saveSettings, NODE_TYPES, togetherGroup, loopWires, loopSection } from './state.js?v=0.9.0';
+import { compile, collect, generateOrder, generateLevels, gatherContext, evaluateCondition, liveNodes, generateDeps, textOf } from './compile.js?v=0.9.0';
 
 /** The connection the chat itself is using, when a block does not name one. */
 function currentProfileId() {
@@ -493,6 +493,16 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
     const decisions = {};
     /** Generate blocks that turned out to have nothing to do. */
     const skipped = new Set();
+    /** Loops: how often each has run, and which result it last acted on. */
+    const loopCount = {};
+    const loopSeen = {};
+    const loopLast = {};
+    /** Which attempt each block is on, for the labels in the chat. */
+    const attemptOf = {};
+    /** Bumped every time a Generate block answers, so a loop acts on each answer once. */
+    const answerNo = {};
+    live.loopInputs = {};
+    live.excludedKeys = {};
 
     /**
      * Ask one Generate block its question.
@@ -516,9 +526,28 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
 
         for (let attempt = 0; attempt <= retries; attempt++) {
             try {
-                const reply = await askModel(built.messages, gen, signal);
+                let reply = await askModel(built.messages, gen, signal);
+                let sent = built.messages;
+                const passes = Math.max(1, Math.min(10, Math.round(Number(gen.repeat) || 1)));
+                // Repeat: each extra pass is shown its last answer and asked
+                // again, so it works on its own result. It stops early when a
+                // pass changes nothing, and you are not billed for the rest.
+                for (let pass = 2; pass <= passes && !signal?.aborted; pass++) {
+                    record(gen, reply.text, null, Date.now() - startedAt, sent, reply, { pass: pass - 1, of: passes });
+                    const again = String(gen.repeatPrompt ?? '').trim()
+                        || String(built.messages.at(-1)?.content ?? '').trim()
+                        || 'Go over your answer again and improve it the same way. Reply with the full revised text only.';
+                    sent = [...built.messages, { role: 'assistant', content: reply.text }, { role: 'user', content: again }];
+                    onStage?.({ ...gen, title: `${gen.title} (pass ${pass})` }, done, total);
+                    const next = await askModel(sent, gen, signal);
+                    const same = gen.repeatStopWhenSame !== false && sameText(next.text, reply.text);
+                    reply = next;
+                    if (same) { reply.stoppedEarly = pass; break; }
+                }
                 results[gen.id] = reply.text;
-                record(gen, reply.text, null, Date.now() - startedAt, built.messages, reply);
+                answerNo[gen.id] = (answerNo[gen.id] ?? 0) + 1;
+                record(gen, reply.text, null, Date.now() - startedAt, sent, reply,
+                    passes > 1 ? { pass: reply.stoppedEarly ?? passes, of: passes, stoppedEarly: !!reply.stoppedEarly } : null);
                 const cutoff = describeCutoff(gen.title, reply.usage, reply.finish);
                 if (cutoff) cutoffs.push(cutoff);
                 return { node: gen, ok: true };
@@ -544,13 +573,17 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
         return null;
     }
 
-    function record(gen, text, failed, ms, sentMessages, reply = null) {
+    function record(gen, text, failed, ms, sentMessages, reply = null, passInfo = null) {
         // Exactly what went to the model, after shaping, for the inspector.
         const prompt = safe(() => shapeForApi(sentMessages, gen).messages, sentMessages) ?? [];
         const at = thoughts.findIndex(t => t.id === gen.id);
+        const attempt = attemptOf[gen.id] ?? 1;
+        const bits = [];
+        if (attempt > 1) bits.push(`attempt ${attempt}`);
+        if (passInfo) bits.push(passInfo.stoppedEarly ? `stopped after pass ${passInfo.pass}: nothing left to change` : `pass ${passInfo.pass} of ${passInfo.of}`);
         const entry = {
             id: gen.id,
-            title: gen.title,
+            title: bits.length ? `${gen.title} (${bits.join(', ')})` : gen.title,
             label: gen.label || gen.title,
             text: String(text ?? ''),
             failed,
@@ -567,26 +600,85 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
         safe(() => onResult?.(entry));
     }
 
-    const reported = new Set();
+    const reported = new WeakSet();
     const reportDecisions = () => {
         for (const [id, d] of Object.entries(decisions)) {
-            if (reported.has(id)) continue;
-            reported.add(id);
+            if (reported.has(d)) continue;
+            reported.add(d);
             const node = graph.nodes[id];
+            const attempt = attemptOf[id] ?? 1;
             const entry = {
                 id,
                 title: node?.title ?? d.title ?? 'Decider',
-                label: `${node?.title ?? 'Decider'} \u2192 ${d.name}`,
+                label: `${node?.title ?? 'Decider'} \u2192 ${d.name}${attempt > 1 ? ` (attempt ${attempt})` : ''}`,
                 text: d.why,
                 decision: d.key,
                 failed: null,
                 ms: 0,
                 show: node?.showInChat !== false,
             };
-            thoughts.push(entry);
+            const at = thoughts.findIndex(t => t.id === id);
+            if (at === -1) thoughts.push(entry); else thoughts[at] = entry;
             safe(() => onResult?.(entry));
         }
     };
+
+    /**
+     * Loops. A loop wire runs when its source has a fresh result: a Generate
+     * block that has answered, or a Decider that chose the looping key. The
+     * section between the loop's two ends is cleared and runs again, with
+     * the result handed to the top. When a loop has run its limit, a Generate
+     * block's answer simply carries on down the canvas, and a Decider's
+     * looping key is taken off its list so it has to choose another.
+     * @returns {boolean} whether anything changed
+     */
+    function checkLoops() {
+        for (const wire of loopWires(graph)) {
+            const src = graph.nodes[wire.from];
+            if (!src || src.enabled === false || !graph.nodes[wire.to]) continue;
+            const max = Math.max(1, Math.min(20, Math.round(Number(wire.loop.max) || 1)));
+            const count = loopCount[wire.id] ?? 0;
+            let token = null, text = null;
+            if (src.type === NODE_TYPES.GENERATE) {
+                if (!answerNo[src.id] || !String(results[src.id] ?? '').trim()) continue;
+                token = `g${answerNo[src.id]}`;
+                text = results[src.id];
+            } else if (src.type === NODE_TYPES.DECIDER) {
+                const d = decisions[src.id];
+                if (!d || d.key !== wire.port) continue;
+                token = d;
+                text = textOf(collect(graph, src.id, live, results, decisions).messages);
+            } else continue;
+            if (loopSeen[wire.id] === token) continue;
+            loopSeen[wire.id] = token;
+
+            if (count >= max) {
+                if (src.type === NODE_TYPES.DECIDER) {
+                    (live.excludedKeys[src.id] ??= new Set()).add(wire.port);
+                    delete decisions[src.id];
+                    return true;
+                }
+                continue;
+            }
+            if (src.type === NODE_TYPES.GENERATE && wire.loop.stopWhenSame !== false
+                && loopLast[wire.id] !== undefined && sameText(loopLast[wire.id], text)) {
+                loopCount[wire.id] = max;           // nothing changed: this loop is done
+                continue;
+            }
+            loopCount[wire.id] = count + 1;
+            loopLast[wire.id] = text;
+            live.loopInputs[wire.to] = { text, label: wire.loop.label || null };
+            for (const id of loopSection(graph, wire)) {
+                delete results[id];
+                delete decisions[id];
+                skipped.delete(id);
+                attemptOf[id] = count + 2;
+                for (const k of Object.keys(live.aiAnswers ?? {})) if (k.startsWith(`${id}|`)) delete live.aiAnswers[k];
+            }
+            return true;
+        }
+        return false;
+    }
 
     // Step by step rather than a fixed plan: a Decider can only choose once
     // the text it reads exists, and the path it does not choose must cost
@@ -607,6 +699,7 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
             continue;
         }
         reportDecisions();
+        if (checkLoops()) continue;
         const waiting = [...alive].map(id => graph.nodes[id]).filter(n =>
             n?.type === NODE_TYPES.GENERATE && n.enabled !== false && results[n.id] === undefined && !skipped.has(n.id));
         if (!waiting.length) break;
@@ -724,6 +817,12 @@ async function askYesNo(dec, cond, incoming, signal) {
     return { yes: false, unclear: true, text: '' };
 }
 
+/** Two answers that differ only in spacing count as the same. */
+function sameText(a, b) {
+    const norm = (t) => String(t ?? '').replace(/\s+/g, ' ').trim();
+    return norm(a) === norm(b);
+}
+
 /** How many requests go out at once within one wave, unless you change it. */
 const DEFAULT_AT_ONCE = 2;
 
@@ -817,7 +916,24 @@ export async function previewBlock(graph, node) {
 
 /** How many model calls a graph would make before the real send. */
 export function callCount(graph) {
-    return generateOrder(graph).length;
+    return maxCalls(graph);
+}
+
+/**
+ * The most model calls a send can make: every Generate block's passes, plus
+ * every loop running to its limit. Fewer go out when a Decider takes another
+ * path or a pass changes nothing.
+ */
+export function maxCalls(graph) {
+    const passes = (n) => Math.max(1, Math.min(10, Math.round(Number(n?.repeat) || 1)));
+    const gens = generateOrder(graph);
+    let n = gens.reduce((sum, g) => sum + passes(g), 0);
+    for (const w of loopWires(graph)) {
+        const max = Math.max(1, Math.min(20, Math.round(Number(w.loop.max) || 1)));
+        const inSection = [...loopSection(graph, w)].map(id => graph.nodes[id]).filter(x => x?.type === NODE_TYPES.GENERATE && x.enabled !== false);
+        n += max * inSection.reduce((sum, g) => sum + passes(g), 0);
+    }
+    return n;
 }
 
 /** How many round trips that is, once independent blocks go out together. */

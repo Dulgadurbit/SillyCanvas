@@ -1,5 +1,5 @@
 /**
- * Prompt Canvas — entry point.
+ * Silly Canvas — entry point.
  *
  * Wires the extension into SillyTavern and, when armed, hands the compiled
  * prompt to the generation pipeline.
@@ -16,12 +16,12 @@
  * generation is worse than one that does nothing.
  */
 
-import { settings, save, resolveGraph, ctx, safe } from './src/state.js?v=0.8.0';
-import { run, callCount } from './src/run.js?v=0.8.0';
-import * as UI from './src/ui.js?v=0.8.0';
-import { applyTheme } from './src/theme.js?v=0.8.0';
-import { renderThemeEditor } from './src/theme-editor.js?v=0.8.0';
-import { renderThoughts, attachThoughts, repaintAll, livePanel } from './src/thoughts.js?v=0.8.0';
+import { settings, save, resolveGraph, ctx, safe } from './src/state.js?v=0.9.0';
+import { run, callCount } from './src/run.js?v=0.9.0';
+import * as UI from './src/ui.js?v=0.9.0';
+import { applyTheme } from './src/theme.js?v=0.9.0';
+import { renderThemeEditor } from './src/theme-editor.js?v=0.9.0';
+import { renderThoughts, attachThoughts, repaintAll, livePanel } from './src/thoughts.js?v=0.9.0';
 
 const MODULE = 'prompt-canvas';
 let lastRun = null;
@@ -41,7 +41,7 @@ function armed() {
 /**
  * Build the prompt for one send.
  *
- * Returns null when Prompt Canvas should keep its hands off, in which case
+ * Returns null when Silly Canvas should keep its hands off, in which case
  * SillyTavern's own prompt goes out untouched.
  */
 async function build(dryRun) {
@@ -79,7 +79,7 @@ async function build(dryRun) {
         if (!plan.ok) {
             // An empty chat is a normal state, not a fault worth shouting about.
             if (plan.quiet) console.log(`[${MODULE}] ${plan.reason}`);
-            else warn(`Prompt Canvas did not replace the prompt: ${plan.reason}`);
+            else warn(`Silly Canvas did not replace the prompt: ${plan.reason}`);
             return null;
         }
 
@@ -126,7 +126,7 @@ async function onChatCompletionPromptReady(eventData) {
         console.log(`[${MODULE}] sent ${plan.messages.length} messages`);
     } catch (err) {
         console.error(`[${MODULE}] compile failed, leaving the prompt alone`, err);
-        warn('Prompt Canvas hit an error and left SillyTavern\u2019s prompt untouched. See the console.');
+        warn('Silly Canvas hit an error and left SillyTavern\u2019s prompt untouched. See the console.');
     }
 }
 
@@ -198,7 +198,7 @@ const progress = (() => {
     const paint = () => {
         if (!box) return;
         box.querySelector('.pc-progress-head').textContent =
-            `Prompt Canvas \u00b7 ${Math.min(finished + running.size, total)} of ${total}`;
+            `Silly Canvas \u00b7 ${Math.min(finished + running.size, total)} of ${total}`;
         list.innerHTML = '';
         for (const title of running) {
             const row = document.createElement('div');
@@ -236,7 +236,7 @@ const progress = (() => {
 
 function warn(message) {
     console.warn(`[${MODULE}] ${message}`);
-    safe(() => globalThis.toastr?.warning(message, 'Prompt Canvas'));
+    safe(() => globalThis.toastr?.warning(message, 'Silly Canvas'));
 }
 
 /* ------------------------------------------------------------------ */
@@ -251,7 +251,7 @@ function addLauncher() {
         item.id = 'pc-menu-launch';
         item.className = 'list-group-item flex-container flexGap5 interactable';
         item.tabIndex = 0;
-        item.innerHTML = '<i class="fa-solid fa-diagram-project"></i><span>Prompt Canvas</span>';
+        item.innerHTML = '<i class="fa-solid fa-diagram-project"></i><span>Silly Canvas</span>';
         item.addEventListener('click', () => UI.open());
         menu.append(item);
     }
@@ -266,7 +266,7 @@ function addLauncher() {
         block.innerHTML = `
             <div class="inline-drawer">
                 <div class="inline-drawer-toggle inline-drawer-header">
-                    <b>Prompt Canvas</b>
+                    <b>Silly Canvas</b>
                     <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
                 </div>
                 <div class="inline-drawer-content">
@@ -285,7 +285,7 @@ function addLauncher() {
                     </div>
                     <label class="checkbox_label" for="pc-sendbar-opt">
                         <input id="pc-sendbar-opt" type="checkbox">
-                        <span>Show a Prompt Canvas button next to Send</span>
+                        <span>Show a Silly Canvas button next to Send</span>
                     </label>
                     <div class="pc-settings-hint">
                         Tinted while the canvas is armed. Click to open, right-click to arm or disarm.
@@ -360,7 +360,7 @@ function addSendbarButton() {
         paintSendbar();
         safe(() => globalThis.toastr?.info(armed()
             ? 'Armed. Your canvas builds the prompt.'
-            : 'Off. SillyTavern builds the prompt as usual.', 'Prompt Canvas'));
+            : 'Off. SillyTavern builds the prompt as usual.', 'Silly Canvas'));
     });
     b.addEventListener('mouseenter', paintSendbar);
 
@@ -380,10 +380,10 @@ function paintSendbar() {
     b.classList.toggle('pc-sendbar-on', on && !!r.graph);
     b.classList.toggle('pc-sendbar-nograph', on && !r.graph);
     b.title = !on
-        ? 'Prompt Canvas is off — SillyTavern builds the prompt.\nClick to open. Right-click to arm.'
+        ? 'Silly Canvas is off — SillyTavern builds the prompt.\nClick to open. Right-click to arm.'
         : r.graph
-            ? `Prompt Canvas is armed: "${r.graph.name}" (${from}) builds the prompt.\nClick to open. Right-click to switch off.`
-            : 'Prompt Canvas is armed but no canvas applies here, so SillyTavern builds the prompt.\nClick to open. Right-click to switch off.';
+            ? `Silly Canvas is armed: "${r.graph.name}" (${from}) builds the prompt.\nClick to open. Right-click to switch off.`
+            : 'Silly Canvas is armed but no canvas applies here, so SillyTavern builds the prompt.\nClick to open. Right-click to switch off.';
 }
 
 function paintThrottle() {
@@ -412,7 +412,7 @@ function addSlashCommand() {
         const { SlashCommandParser, SlashCommand, SlashCommandNamedArgument, ARGUMENT_TYPE } = c;
         SlashCommandParser.addCommandObject(SlashCommand.fromProps({
             name: 'canvas',
-            helpString: 'Open Prompt Canvas, or arm/disarm it: <code>/canvas arm</code>, <code>/canvas off</code>.',
+            helpString: 'Open Silly Canvas, or arm/disarm it: <code>/canvas arm</code>, <code>/canvas off</code>.',
             unnamedArgumentList: [],
             callback: (_args, value) => {
                 const v = String(value ?? '').trim().toLowerCase();
@@ -453,7 +453,7 @@ export function getLastRun() {
             mountLauncher();
             addSlashCommand();
 
-            globalThis.promptCanvas = { open: UI.open, close: UI.close, toggle: UI.toggle, getLastRun };
+            globalThis.sillyCanvas = globalThis.promptCanvas = { open: UI.open, close: UI.close, toggle: UI.toggle, getLastRun };
             console.log(`[${MODULE}] ready`);
         } catch (err) {
             console.error(`[${MODULE}] failed to start`, err);

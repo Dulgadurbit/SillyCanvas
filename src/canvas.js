@@ -1,5 +1,5 @@
 /**
- * Prompt Canvas — the canvas renderer.
+ * Silly Canvas — the canvas renderer.
  *
  * Hand-rolled on SVG plus absolutely positioned DOM, deliberately. A graph
  * library would mean either a bundler step or a CDN dependency, and neither
@@ -13,7 +13,7 @@
 
 import {
     NODE_TYPES, WIRE_KINDS, connect, disconnect, removeNode, touchGraph, wiresInto, deciderKeys,
-} from './state.js?v=0.8.0';
+} from './state.js?v=0.9.0';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -322,6 +322,13 @@ export class Canvas {
             el.append(model);
         }
 
+        if (node.type === NODE_TYPES.GENERATE && Number(node.repeat) > 1) {
+            const rep = document.createElement('div');
+            rep.className = 'pc-node-repeat';
+            rep.innerHTML = `<i class="fa-solid fa-repeat"></i> up to ${Math.min(10, Math.round(node.repeat))} passes${node.repeatStopWhenSame !== false ? ', stops when nothing changes' : ''}`;
+            el.append(rep);
+        }
+
         if (node.type === NODE_TYPES.GENERATE) {
             const wave = this.hooks.waveInfo?.(node);
             if (wave && wave.total > 1) {
@@ -444,9 +451,22 @@ export class Canvas {
                 if (text) return String(text).slice(0, 180);
                 return 'Nothing in it right now';
             }
-            case NODE_TYPES.GENERATE:
-                return (node.content || '').slice(0, 180)
-                    || 'Send point. What is wired in above goes to the model; the reply goes on below.';
+            case NODE_TYPES.GENERATE: {
+                // Say how the question is put together, so the order is
+                // visible without opening the block.
+                const own = String(node.content ?? '').trim();
+                const inputs = Object.values(this.graph.wires)
+                    .filter(w => w.to === node.id && w.kind !== WIRE_KINDS.TOGETHER && !w.loop)
+                    .map(w => this.graph.nodes[w.from]).filter(Boolean)
+                    .sort((a, b) => (a.y - b.y) || (a.x - b.x));
+                const n = inputs.length;
+                const wired = `${n} wired block${n === 1 ? '' : 's'}`;
+                if (!own && !n) return 'Nothing to ask yet. Wire blocks in above, or write an instruction.';
+                if (!own) return `${wired}. The last one, "${inputs[n - 1].title}", is the instruction.`;
+                const text = `"${own.slice(0, 140)}${own.length > 140 ? '\u2026' : ''}"`;
+                if (!n) return text;
+                return node.contentPosition === 'before' ? `${text}, then ${wired}` : `${wired}, then ${text}`;
+            }
             case NODE_TYPES.HISTORY: {
                 const span = node.count > 0
                     ? `Last ${node.count} messages${node.skip ? `, skipping ${node.skip}` : ''}`
@@ -557,6 +577,24 @@ export class Canvas {
         return `M ${a.x} ${a.y} C ${a.x + dx} ${a.y}, ${b.x - dx} ${b.y}, ${b.x} ${b.y}`;
     }
 
+    /**
+     * A loop goes back up the canvas. Drawn out to the side and round, so it
+     * never lies on top of the wires it is looping over.
+     */
+    #loopSide(from, to, wire = null) {
+        // Clear the right-hand edge of both blocks it joins.
+        const a = wire && this.graph.nodes[wire.from], b = wire && this.graph.nodes[wire.to];
+        const edge = Math.max(from.x, to.x, a ? a.x + (a.w || 260) : 0, b ? b.x + (b.w || 260) : 0);
+        return { x: edge + 36 + Math.min(80, Math.abs(from.y - to.y) * 0.08), y: (from.y + to.y) / 2 };
+    }
+
+    #loopPath(from, to, wire) {
+        const s = this.#loopSide(from, to, wire);
+        const down = from.y + 36, up = to.y - 36;
+        return `M ${from.x} ${from.y} C ${from.x} ${down + 20}, ${s.x} ${down + 20}, ${s.x} ${down} `
+            + `L ${s.x} ${up} C ${s.x} ${up - 20}, ${to.x} ${up - 20}, ${to.x} ${to.y}`;
+    }
+
     #path(from, to) {
         const dy = Math.max(40, Math.abs(to.y - from.y) * 0.5);
         return `M ${from.x} ${from.y} C ${from.x} ${from.y + dy}, ${to.x} ${to.y - dy}, ${to.x} ${to.y}`;
@@ -588,7 +626,7 @@ export class Canvas {
             const to = tie
                 ? this.#sidePos(left ? wire.to : wire.from, 'left')
                 : this.#portPos(wire.to, 'in');
-            const d = tie ? this.#tiePath(from, to) : this.#path(from, to);
+            const d = tie ? this.#tiePath(from, to) : wire.loop ? this.#loopPath(from, to, wire) : this.#path(from, to);
 
             const hit = document.createElementNS(SVG_NS, 'path');
             hit.setAttribute('d', d);
@@ -602,15 +640,18 @@ export class Canvas {
             const chosen = isKey ? this.trace?.get(wire.from)?.decision : undefined;
             const untaken = isKey && chosen !== undefined && chosen !== null && chosen !== wire.port;
             const offWire = this.graph.nodes[wire.from]?.enabled === false || this.graph.nodes[wire.to]?.enabled === false;
-            path.setAttribute('class', `pc-wire pc-wire-${wire.kind}${isKey ? ' pc-wire-key' : ''}${untaken ? ' pc-wire-untaken' : ''}${offWire ? ' pc-wire-off' : ''}${this.selection?.kind === 'wire' && this.selection.id === wire.id ? ' pc-selected' : ''}`);
+            path.setAttribute('class', `pc-wire pc-wire-${wire.kind}${wire.loop ? ' pc-wire-loop' : ''}${isKey ? ' pc-wire-key' : ''}${untaken ? ' pc-wire-untaken' : ''}${offWire ? ' pc-wire-off' : ''}${this.selection?.kind === 'wire' && this.selection.id === wire.id ? ' pc-selected' : ''}`);
 
             const label = document.createElementNS(SVG_NS, 'text');
             label.setAttribute('class', 'pc-wire-label');
-            label.setAttribute('x', (from.x + to.x) / 2);
-            label.setAttribute('y', (from.y + to.y) / 2);
+            const side = wire.loop ? this.#loopSide(from, to, wire) : null;
+            label.setAttribute('x', side ? side.x : (from.x + to.x) / 2);
+            label.setAttribute('y', side ? side.y : (from.y + to.y) / 2);
+            const keyName = isKey ? (deciderKeys(srcNode).find(k => k.id === wire.port)?.name ?? 'key') : null;
             label.textContent = tie ? TOGETHER_LABEL
-                : isKey ? (deciderKeys(srcNode).find(k => k.id === wire.port)?.name ?? 'key')
-                : (WIRE_LABEL[wire.kind] ?? wire.kind);
+                : wire.loop ? `\u21ba ${keyName ? keyName + ': ' : ''}up to ${wire.loop.max ?? 3}\u00d7`
+                : keyName ?? (WIRE_LABEL[wire.kind] ?? wire.kind);
+            if (wire.loop) label.classList.add('pc-wire-label-loop');
 
             this.svg.append(hit, path, label);
         }
@@ -763,7 +804,11 @@ export class Canvas {
                     }
                     const res = connect(this.graph, fromId, toId, tie ? WIRE_KINDS.TOGETHER : WIRE_KINDS.MERGE, { port });
                     if (!res.ok) this.hooks.onToast?.(res.reason);
-                    else this.hooks.onChange?.();
+                    else {
+                        this.hooks.onChange?.();
+                        // A new loop: show its settings, so the limit is seen and can be changed.
+                        if (res.wire?.loop) { this.render(); this.select({ kind: 'wire', id: res.wire.id }); return; }
+                    }
                 }
                 this.render();
                 return;

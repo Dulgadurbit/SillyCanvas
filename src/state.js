@@ -1,5 +1,5 @@
 /**
- * Prompt Canvas — state layer.
+ * Silly Canvas — state layer.
  *
  * Everything here goes through SillyTavern.getContext(). No deep imports into
  * ST internals: those move between releases, the context object does not.
@@ -99,7 +99,7 @@ export function safe(fn, fallback = undefined) {
 export function settings() {
     const c = ctx();
     const root = c.extensionSettings ?? c.extension_settings;
-    if (!root) throw new Error('Prompt Canvas: getContext() exposed no extension settings');
+    if (!root) throw new Error('Silly Canvas: getContext() exposed no extension settings');
     if (!root[MODULE]) root[MODULE] = {};
     const s = root[MODULE];
     s.enabled ??= false;
@@ -339,6 +339,11 @@ export function defaultNode(type, x, y) {
                 label: '',
                 /** Send a closing system instruction as the user turn. See shapeForApi(). */
                 instructionAsUser: true,
+                /** Passes: 1 runs once; more reruns it on its own answer. */
+                repeat: 1,
+                repeatStopWhenSame: true,
+                /** What to ask on each extra pass. Empty repeats the instruction. */
+                repeatPrompt: '',
             };
         case NODE_TYPES.NOTE:
             return { ...base, title: 'Note', content: '', w: 220 };
@@ -386,7 +391,11 @@ export function outputNode(graph) {
  * cycle in a prompt graph is not a clever loop, it is an infinite prompt.
  */
 export function connect(graph, fromId, toId, kind = WIRE_KINDS.APPEND, { port = null } = {}) {
-    if (fromId === toId) return { ok: false, reason: 'A block cannot wire to itself.' };
+    if (fromId === toId) {
+        return { ok: false, reason: graph.nodes[fromId]?.type === NODE_TYPES.GENERATE
+            ? 'A block cannot wire to itself. To run a Generate block several times, set Repeat in its settings.'
+            : 'A block cannot wire to itself.' };
+    }
     if (!graph.nodes[fromId] || !graph.nodes[toId]) return { ok: false, reason: 'Missing block.' };
 
     if (kind === WIRE_KINDS.TOGETHER) return tieTogether(graph, fromId, toId);
@@ -405,8 +414,18 @@ export function connect(graph, fromId, toId, kind = WIRE_KINDS.APPEND, { port = 
     const exists = Object.values(graph.wires).some(w =>
         w.kind !== WIRE_KINDS.TOGETHER && w.from === fromId && w.to === toId && (w.port ?? null) === port);
     if (exists) return { ok: false, reason: 'Those blocks are already wired.' };
-    if (wouldCycle(graph, fromId, toId)) return { ok: false, reason: 'That would make a loop.' };
-    const wire = { id: uid('w'), from: fromId, to: toId, kind, ...(port ? { port } : {}) };
+    let loop = null;
+    if (wouldCycle(graph, fromId, toId)) {
+        // A wire back up the canvas is a loop. Only a model call or a Decider
+        // can close one, because only those can end it: a Generate block by
+        // running out of passes or changing nothing, a Decider by choosing a
+        // different key. A loop of plain prompts would just repeat forever.
+        if (src.type !== NODE_TYPES.GENERATE && src.type !== NODE_TYPES.DECIDER) {
+            return { ok: false, reason: 'That would make a loop. Only a Generate block, or a Decider key, can send its result back up.' };
+        }
+        loop = { max: 3, stopWhenSame: true };
+    }
+    const wire = { id: uid('w'), from: fromId, to: toId, kind, ...(port ? { port } : {}), ...(loop ? { loop } : {}) };
     graph.wires[wire.id] = wire;
     touchGraph(graph);
     return { ok: true, wire };
@@ -467,19 +486,52 @@ function wouldCycle(graph, fromId, toId) {
         if (seen.has(cur)) continue;
         seen.add(cur);
         for (const w of Object.values(graph.wires)) {
-            if (w.from === cur) stack.push(w.to);
+            if (w.from === cur && !w.loop) stack.push(w.to);
         }
     }
     return false;
 }
 
-/** Wires that actually carry text. Grouping ties are not among them. */
+/**
+ * Wires that carry text forward. Grouping ties are not among them, and
+ * neither are loop wires: those run only at send time, so everything that
+ * reads the graph as a picture (order, preview, reach) sees it without them.
+ */
 export function wiresInto(graph, nodeId) {
-    return Object.values(graph.wires).filter(w => w.to === nodeId && w.kind !== WIRE_KINDS.TOGETHER);
+    return Object.values(graph.wires).filter(w => w.to === nodeId && w.kind !== WIRE_KINDS.TOGETHER && !w.loop);
 }
 
 export function wiresOutOf(graph, nodeId) {
-    return Object.values(graph.wires).filter(w => w.from === nodeId && w.kind !== WIRE_KINDS.TOGETHER);
+    return Object.values(graph.wires).filter(w => w.from === nodeId && w.kind !== WIRE_KINDS.TOGETHER && !w.loop);
+}
+
+/** Wires that send a result back up the canvas. */
+export function loopWires(graph) {
+    return Object.values(graph.wires).filter(w => !!w.loop);
+}
+
+/**
+ * The blocks a loop runs again: everything on a path from where the loop
+ * lands down to where it starts, both ends included.
+ */
+export function loopSection(graph, wire) {
+    const forward = new Set();
+    const stack = [wire.to];
+    while (stack.length) {
+        const id = stack.pop();
+        if (forward.has(id)) continue;
+        forward.add(id);
+        for (const w of wiresOutOf(graph, id)) stack.push(w.to);
+    }
+    const back = new Set();
+    const up = [wire.from];
+    while (up.length) {
+        const id = up.pop();
+        if (back.has(id)) continue;
+        back.add(id);
+        for (const w of wiresInto(graph, id)) up.push(w.from);
+    }
+    return new Set([...forward].filter(id => back.has(id)));
 }
 
 /** The "send these together" ties, which carry nothing. */

@@ -1,5 +1,5 @@
 /**
- * Prompt Canvas — the compiler.
+ * Silly Canvas — the compiler.
  *
  * A graph is not executed. It is compiled into a plan, and the plan is what
  * runs. That separation is the whole point: a plan is inspectable before a
@@ -22,8 +22,8 @@
  * no exceptions, because a graph you have to trace to predict is not a tool.
  */
 
-import { ctx, safe, NODE_TYPES, WIRE_KINDS, wiresInto, wiresOutOf, outputNode, togetherGroup, groupWires, deciderKeys } from './state.js?v=0.8.0';
-import { stPrompt, MARKER_SOURCES } from './library.js?v=0.8.0';
+import { ctx, safe, NODE_TYPES, WIRE_KINDS, wiresInto, wiresOutOf, outputNode, togetherGroup, groupWires, deciderKeys } from './state.js?v=0.9.0';
+import { stPrompt, MARKER_SOURCES } from './library.js?v=0.9.0';
 
 /* ------------------------------------------------------------------ */
 /* live context                                                        */
@@ -328,13 +328,16 @@ function emptyRule(cond) {
  */
 export function evaluateDecider(node, live, incoming, extra = {}) {
     const fb = node.fallback ?? { id: 'fallback', name: 'Otherwise' };
-    const keys = (node.keys ?? []).filter(Boolean);
+    // A key whose loop has run out is taken off the list, so the Decider
+    // has to choose something else.
+    const gone = extra.exclude ?? null;
+    const keys = (node.keys ?? []).filter(k => k && !gone?.has(k.id));
     const pick = (k, why, fallback = false) => ({ key: k.id, name: k.name || 'key', why, fallback });
 
     if (node.enabled === false) return pick(fb, 'switched off, so it takes the fallback path', true);
 
     if (node.mode === 'random') {
-        const all = [...keys, fb].map(k => ({ k, w: Math.max(0, Number(k.weight ?? 1)) }));
+        const all = [...keys, ...(gone?.has(fb.id) ? [] : [fb])].map(k => ({ k, w: Math.max(0, Number(k.weight ?? 1)) }));
         const total = all.reduce((n, x) => n + x.w, 0);
         if (total <= 0) return pick(fb, 'every weight is zero', true);
         let roll = (extra.random ?? Math.random)() * total;
@@ -507,7 +510,7 @@ export function resolveNode(node, live) {
             if (def.marker) {
                 const raw = markerContent(def.identifier, live);
                 if (raw === null) {
-                    warnings.push(`"${def.name}" is assembled by SillyTavern and Prompt Canvas cannot resolve it yet. It will be skipped.`);
+                    warnings.push(`"${def.name}" is assembled by SillyTavern and Silly Canvas cannot resolve it yet. It will be skipped.`);
                     return { messages: [], warnings };
                 }
                 const content = sub(raw).trim();
@@ -752,6 +755,16 @@ export function collect(graph, targetId, live, results = {}, decisions = {}) {
 
         if (entry && !ownFirstTrace) trace.push(entry);
 
+        // A loop that came back here brings its last result with it.
+        const back = live.loopInputs?.[nodeId];
+        if (back && String(back.text ?? '').trim()) {
+            before.push({
+                role: 'system',
+                content: `${back.label || 'Your previous attempt, to improve on:'}\n\n${String(back.text).trim()}`,
+                __y: Math.max(node.y, ...before.map(m => m.__y ?? node.y)) + 0.0005,
+            });
+        }
+
         // Reading order is vertical, all the way down. Every message keeps the
         // height of the block it came from, so the System Prompt at the top of
         // the canvas goes first even when it arrives through a block further
@@ -805,7 +818,7 @@ export function tryDecide(graph, dec, live, results = {}, decisions = {}) {
         if (inner.pending.length) return null;
         incoming = textOf(inner.messages);
     }
-    const r = evaluateDecider(dec, live, incoming, { ai: live.aiAnswers ?? {}, aiKey: (c) => aiRuleKey(dec, c) });
+    const r = evaluateDecider(dec, live, incoming, { ai: live.aiAnswers ?? {}, aiKey: (c) => aiRuleKey(dec, c), exclude: live.excludedKeys?.[dec.id] ?? null });
     if (r.needs) {
         // An AI rule has to be asked before this can be decided. The runner
         // asks it and tries again; a preview never asks, so it stays open.
@@ -1072,7 +1085,8 @@ function deciderWarnings(graph) {
     const out = [];
     for (const node of Object.values(graph.nodes)) {
         if (node.type !== NODE_TYPES.DECIDER || node.enabled === false) continue;
-        const wired = new Set(wiresOutOf(graph, node.id).map(w => w.port));
+        // Loop wires count: a key that goes back up is wired.
+        const wired = new Set(Object.values(graph.wires).filter(w => w.from === node.id && w.kind !== WIRE_KINDS.TOGETHER).map(w => w.port));
         const fb = node.fallback;
         if (fb && !wired.has(fb.id)) {
             out.push(`"${node.title}": the "${fb.name || 'Otherwise'}" path is not wired, so when no key matches, nothing below this Decider is sent.`);
@@ -1246,7 +1260,7 @@ export async function compile(graph, { dryRun = false, live = null, results = {}
     const tokens = await countTokens(built.messages);
     const budget = Number(ctx().maxContext) || 0;
     if (budget && tokens > budget) {
-        warnings.push(`This prompt is about ${tokens.toLocaleString()} tokens against a context of ${budget.toLocaleString()}. Prompt Canvas does not trim to fit — the provider will reject it or truncate for you.`);
+        warnings.push(`This prompt is about ${tokens.toLocaleString()} tokens against a context of ${budget.toLocaleString()}. Silly Canvas does not trim to fit — the provider will reject it or truncate for you.`);
     }
 
     stages.push({

@@ -870,3 +870,9 @@
     box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
 }
 .pc-theme-pop-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+
+/* ---- loops --------------------------------------------------------- */
+.pc-wire-loop { stroke-dasharray: 5 4; stroke-width: 2.5; opacity: 0.9; }
+.pc-wire-label-loop { font-weight: 700; opacity: 0.9; }
+.pc-node-repeat { padding: 3px 10px 6px; font-size: 0.8em; color: var(--pc-generate); }
+.pc-dest-loop { background: color-mix(in srgb, var(--pc-generate) 18%, transparent); }

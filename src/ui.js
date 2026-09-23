@@ -1,5 +1,5 @@
 /**
- * Prompt Canvas — the panel.
+ * Silly Canvas — the panel.
  *
  * Layout: library on the left, canvas in the middle, inspector on the right,
  * a compile preview that slides up from the bottom. The preview is not a
@@ -14,14 +14,14 @@ import {
     chatBinding, setChatBinding, characterBinding, setCharacterBinding,
     exportGraph, importGraph, blankGraph, isFolderCollapsed, setFolderCollapsed, togetherGroup,
     newDeciderKey, removeDeciderKey, onGraphTouched,
-} from './state.js?v=0.8.0';
-import { applyTheme } from './theme.js?v=0.8.0';
-import { renderThemeEditor } from './theme-editor.js?v=0.8.0';
-import * as H from './history.js?v=0.8.0';
-import * as L from './library.js?v=0.8.0';
-import { compile, gatherContext, resolveNode, textOf, generateLevels, emissionCounts } from './compile.js?v=0.8.0';
-import { run, profileName, effectiveModel, callCount, testBlock, shapeForApi, inspectProfile, modelsForSource, sourceForBlock, cachedModels, fetchModelList, previewBlock } from './run.js?v=0.8.0';
-import { Canvas, WIRE_LABEL, TYPE_LABEL } from './canvas.js?v=0.8.0';
+} from './state.js?v=0.9.0';
+import { applyTheme } from './theme.js?v=0.9.0';
+import { renderThemeEditor } from './theme-editor.js?v=0.9.0';
+import * as H from './history.js?v=0.9.0';
+import * as L from './library.js?v=0.9.0';
+import { compile, gatherContext, resolveNode, textOf, generateLevels, emissionCounts } from './compile.js?v=0.9.0';
+import { run, profileName, effectiveModel, callCount, testBlock, shapeForApi, inspectProfile, modelsForSource, sourceForBlock, cachedModels, fetchModelList, previewBlock } from './run.js?v=0.9.0';
+import { Canvas, WIRE_LABEL, TYPE_LABEL } from './canvas.js?v=0.9.0';
 
 let root = null;
 let canvas = null;
@@ -42,11 +42,11 @@ export function escapeHtml(s) {
 
 export function toast(msg, type = 'info') {
     const t = safe(() => globalThis.toastr);
-    if (t) t[type === 'error' ? 'error' : type === 'success' ? 'success' : 'info'](msg, 'Prompt Canvas');
-    else console.log('[Prompt Canvas]', msg);
+    if (t) t[type === 'error' ? 'error' : type === 'success' ? 'success' : 'info'](msg, 'Silly Canvas');
+    else console.log('[Silly Canvas]', msg);
 }
 
-export async function confirmBox(text, title = 'Prompt Canvas') {
+export async function confirmBox(text, title = 'Silly Canvas') {
     const c = ctx();
     try {
         const res = await c.callGenericPopup(text, c.POPUP_TYPE.CONFIRM, '', { okButton: 'Yes', cancelButton: 'No', title });
@@ -59,7 +59,7 @@ export async function confirmBox(text, title = 'Prompt Canvas') {
 export async function inputBox(text, value = '') {
     const c = ctx();
     try {
-        const res = await c.callGenericPopup(text, c.POPUP_TYPE.INPUT, value, { title: 'Prompt Canvas' });
+        const res = await c.callGenericPopup(text, c.POPUP_TYPE.INPUT, value, { title: 'Silly Canvas' });
         return (res === false || res === null || res === undefined) ? null : String(res);
     } catch {
         return prompt(text, value);
@@ -170,7 +170,7 @@ function build() {
 
     const header = el('div', 'pc-header');
     const brand = el('div', 'pc-brand');
-    brand.innerHTML = '<i class="fa-solid fa-diagram-project"></i><span>Prompt Canvas</span>';
+    brand.innerHTML = '<i class="fa-solid fa-diagram-project"></i><span>Silly Canvas</span>';
 
     const graphSelect = el('select', 'pc-select pc-graph-select text_pole');
     graphSelect.addEventListener('change', () => {
@@ -217,8 +217,8 @@ function build() {
         save();
         renderStatus();
         toast(arm.checked
-            ? 'Prompt Canvas is armed. Your canvas now builds the prompt.'
-            : 'Prompt Canvas is off. SillyTavern builds the prompt as usual.',
+            ? 'Silly Canvas is armed. Your canvas now builds the prompt.'
+            : 'Silly Canvas is off. SillyTavern builds the prompt as usual.',
         arm.checked ? 'success' : 'info');
     });
     armWrap.append(arm, el('span', '', 'Arm'));
@@ -868,6 +868,8 @@ function renderWireInspector(box) {
         return;
     }
 
+    if (wire.loop) return renderLoopInspector(box, wire, from, to);
+
     box.append(el('div', 'pc-insp-title', 'Wire'));
     box.append(el('div', 'pc-hint', `${from?.title ?? '?'} → ${to?.title ?? '?'}`));
 
@@ -1207,22 +1209,28 @@ function renderGenerateFields(box, node) {
     box.append(el('div', 'pc-test-slot'));
 
     const content = el('textarea', 'text_pole pc-textarea');
-    content.rows = 8;
+    content.rows = 6;
     content.value = node.content ?? '';
-    content.placeholder = 'What you want to ask here.';
-    content.addEventListener('input', () => { node.content = content.value; touch(); canvas.render(); });
-    box.append(field('Prompt', content, 'Sent along with whatever is wired into the top. Macros work here.'));
+    content.placeholder = 'What should the model do with what is wired in? For example: List three beats for the next scene.';
+    const where = el('div', 'pc-hint');
+    const explain = () => { where.textContent = instructionHint(node); };
+    content.addEventListener('input', () => { node.content = content.value; touch(); canvas.render(); explain(); });
+    explain();
+    const f = field('Instruction', content);
+    f.append(where);
+    box.append(f);
 
     box.append(field('Role', dropdown(ROLES.map(r => [r, r]), node.role || 'system', (v) => {
         node.role = v; touch(); canvas.render();
     })));
 
-    box.append(field('This text goes', dropdown([
-        ['after', 'after the wired blocks'],
+    box.append(field('Instruction goes', dropdown([
+        ['after', 'after the wired blocks (the usual choice)'],
         ['before', 'before the wired blocks'],
-    ], node.contentPosition ?? 'after', (v) => { node.contentPosition = v; touch(); canvas.render(); })));
+    ], node.contentPosition ?? 'after', (v) => { node.contentPosition = v; touch(); canvas.render(); renderInspector(); })));
 
     box.append(checkline('Send the last instruction as the user’s turn', node.instructionAsUser !== false, (v) => { node.instructionAsUser = v; touch(); }));
+    renderRepeatFields(box, node);
     box.append(el('div', 'pc-hint', 'On by default. Most providers move system messages to the top, so an instruction placed after the chat as a system message is read before the chat — and the model answers the roleplay instead of the task. This makes the instruction the last thing it is asked.'));
 
     box.append(el('hr', 'pc-rule'));
@@ -1274,6 +1282,79 @@ function renderGenerateFields(box, node) {
         label.addEventListener('input', () => { node.label = label.value; touch(); });
         box.append(field('Extra heading in the chat', label, 'The block\u2019s name is always shown; this is added beside it.'));
     }
+}
+
+/** Repeat: run a Generate block several times, each pass on its own answer. */
+function renderRepeatFields(box, node) {
+    box.append(el('hr', 'pc-rule'));
+    const passes = el('input', 'text_pole');
+    passes.type = 'number'; passes.min = '1'; passes.max = '10';
+    passes.value = node.repeat ?? 1;
+    passes.addEventListener('change', () => {
+        node.repeat = Math.max(1, Math.min(10, Math.round(Number(passes.value) || 1)));
+        passes.value = node.repeat;
+        touch(); canvas.render(); renderInspector();
+    });
+    box.append(field('Passes', passes, 'More than 1 runs this block again on its own answer, for jobs like "remove the AI slop from this text". Each pass is a model call.'));
+    if (Number(node.repeat) > 1) {
+        box.append(checkline('Stop early when a pass changes nothing', node.repeatStopWhenSame !== false, (v) => { node.repeatStopWhenSame = v; touch(); canvas.render(); }));
+        const again = el('textarea', 'text_pole pc-textarea');
+        again.rows = 2;
+        again.value = node.repeatPrompt ?? '';
+        again.placeholder = 'Empty: ask the same instruction again';
+        again.addEventListener('input', () => { node.repeatPrompt = again.value; touch(); });
+        box.append(field('Ask on each extra pass', again));
+    }
+}
+
+/** A wire that sends a result back up the canvas. */
+function renderLoopInspector(box, wire, from, to) {
+    const key = from?.type === NODE_TYPES.DECIDER
+        ? [...(from.keys ?? []), from.fallback].find(k => k?.id === wire.port) : null;
+    box.append(el('div', 'pc-insp-title', 'Loop'));
+    box.append(el('div', 'pc-hint', `${from?.title ?? '?'}${key ? ` (${key.name})` : ''} \u21ba back to ${to?.title ?? '?'}`));
+    box.append(el('div', 'pc-hint', key
+        ? `When "${from.title}" chooses ${key.name}, its text goes back to "${to?.title}" and everything in between runs again. Once the limit is reached, ${key.name} is taken off the Decider's list, so it has to choose something else.`
+        : `After "${from?.title}" answers, its answer goes back to "${to?.title}" and everything in between runs again. Once the limit is reached, the last answer carries on down the canvas.`));
+
+    const max = el('input', 'text_pole');
+    max.type = 'number'; max.min = '1'; max.max = '20';
+    max.value = wire.loop.max ?? 3;
+    max.addEventListener('input', () => {
+        wire.loop.max = Math.max(1, Math.min(20, Math.round(Number(max.value) || 1)));
+        touch(); canvas.render();
+    });
+    box.append(field('Run it again at most', max, 'Each time round costs a model call for every Generate block in the loop.'));
+
+    if (from?.type === NODE_TYPES.GENERATE) {
+        box.append(checkline('Stop early if the answer stops changing', wire.loop.stopWhenSame !== false, (v) => { wire.loop.stopWhenSame = v; touch(); }));
+    }
+
+    const label = el('input', 'text_pole');
+    label.value = wire.loop.label ?? '';
+    label.placeholder = 'Your previous attempt, to improve on:';
+    label.addEventListener('input', () => { wire.loop.label = label.value || null; touch(); });
+    box.append(field(`What "${to?.title ?? 'the block'}" is told`, label, 'Put in front of the text that comes back, so the model knows what it is looking at.'));
+
+    const del = el('div', 'pc-btn menu_button pc-danger');
+    del.innerHTML = '<i class="fa-solid fa-trash-can"></i> Remove this loop';
+    del.addEventListener('click', () => { disconnect(current, wire.id); selected = null; canvas.render(); renderInspector(); });
+    box.append(del);
+}
+
+/** Where a Generate block's task comes from, in one sentence. */
+function instructionHint(node) {
+    const inputs = Object.values(current.wires)
+        .filter(w => w.to === node.id && w.kind !== WIRE_KINDS.TOGETHER && !w.loop)
+        .map(w => current.nodes[w.from]).filter(Boolean)
+        .sort((a, b) => (a.y - b.y) || (a.x - b.x));
+    const own = String(node.content ?? '').trim();
+    if (!own && !inputs.length) return 'Nothing is wired in and there is no instruction, so this block has nothing to ask.';
+    if (!own) return `Empty, so the last block wired in is the instruction: "${inputs[inputs.length - 1].title}". Type here for a short ask instead.`;
+    if (!inputs.length) return 'Nothing is wired in, so this instruction is the whole question.';
+    return node.contentPosition === 'before'
+        ? 'Sent first, before the blocks wired in.'
+        : 'Sent last, after the blocks wired in, so it is the final thing the model reads.';
 }
 
 /** Names of the Generate blocks tied to this one. */
@@ -1605,7 +1686,7 @@ function destinationPicker(node, key) {
     const chips = el('div', 'pc-dest-chips');
     for (const w of out) {
         const target = current.nodes[w.to];
-        const chip = el('span', 'pc-dest-chip', `\u2192 ${target?.title || 'missing block'}`);
+        const chip = el('span', `pc-dest-chip${w.loop ? ' pc-dest-loop' : ''}`, `${w.loop ? `\u21ba back to ${target?.title || 'missing block'}, up to ${w.loop.max ?? 3}\u00d7` : `\u2192 ${target?.title || 'missing block'}`}`);
         const x = el('i', 'fa-solid fa-xmark pc-dest-x');
         x.title = 'Remove this connection';
         x.addEventListener('click', () => { disconnect(current, w.id); touch(); canvas.render(); renderInspector(); });

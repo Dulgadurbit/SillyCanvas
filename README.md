@@ -64,11 +64,26 @@ A Generate block is a model call inside your prompt. Common uses:
 - A pass that pulls out what each character knows or wants.
 - A second model that checks or rewrites something.
 
+The **Instruction** box is for a short ask like "List three beats for the next scene". It is sent after the blocks wired in, so it is the last thing the model reads. Leave it empty and the lowest block wired in becomes the instruction instead. The block itself shows which it is.
+
 Each Generate block can use its own connection profile and model. If you leave it on "same as the chat", it uses whatever model the chat is on at that moment. Thinking is off by default, because reasoning models can spend most of the token budget thinking and leave almost nothing for the answer.
 
 While the blocks run, their answers appear at the bottom of the chat, each one labelled with the block that wrote it. When the reply arrives they fold away under it. Open **What it was asked** on any answer to see the exact messages that block was sent.
 
 Generate blocks that don't depend on each other are sent at the same time. If your provider refuses that, Silly Canvas switches to one at a time and tells you.
+
+## Loops
+
+Some jobs work better in several goes, like cleaning AI phrasing out of a draft. There are two ways to repeat work.
+
+**Passes**, on a single Generate block. Set **Passes** to 3 and the block runs up to three times, each pass working on its own last answer. It stops early when a pass changes nothing, so you only pay for the passes that did something.
+
+**Loop wires**, for a whole section. Drag a wire from a Generate block, or from a Decider key, back up to a block above it. Everything between the two ends runs again, and the result is handed back to the top as "your previous attempt". Each loop has a limit, shown on the wire, that you can change by clicking it.
+
+- A loop from a **Generate block** runs until the limit, or until the result stops changing, and then carries on down the canvas.
+- A loop from a **Decider key** runs each time that key is chosen. Once the limit is reached, the key is taken off the Decider's list, so it has to choose something else. For example: draft, check for "Elara", and if found go back and redraft, at most three times.
+
+Only Generate blocks and Decider keys can loop, because only they can end a loop. The canvas and the preview show a loop's first run; the loops themselves happen when you send.
 
 ## Decider blocks
 
