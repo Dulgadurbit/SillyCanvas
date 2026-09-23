@@ -126,6 +126,11 @@ async function onChatCompletionPromptReady(eventData) {
 async function onTextCompletionPromptReady(eventData) {
     if (!armed()) return;
     if (!eventData || typeof eventData.prompt !== 'string') return;
+    // SillyTavern fires this event for chat completion too, just before
+    // CHAT_COMPLETION_PROMPT_READY, and then throws the string away. Building
+    // here as well ran every Generate block twice per send — billed twice, and
+    // the first run's answers vanished from the chat when the second began.
+    if (safe(() => ctx().mainApi) === 'openai') return;
     try {
         const plan = await build(!!eventData.dryRun);
         if (!plan) return;
