@@ -184,7 +184,7 @@ function build() {
     const undoBtn = mkBtn('fa-rotate-left', 'Undo (Ctrl+Z)', () => doUndo(), 'pc-undo');
     const redoBtn = mkBtn('fa-rotate-right', 'Redo (Ctrl+Shift+Z)', () => doRedo(), 'pc-redo');
     const history = el('div', 'pc-header-actions pc-history');
-    history.append(undoBtn, redoBtn);
+    history.append(undoBtn, redoBtn, el('span', 'pc-history-note'));
 
     const headerButtons = el('div', 'pc-header-actions');
     headerButtons.append(
@@ -280,10 +280,8 @@ function build() {
             if ((k === 'z' && e.shiftKey) || k === 'y') { e.preventDefault(); doRedo(); return; }
         }
         if ((e.key === 'Delete' || e.key === 'Backspace') && !typing) {
-            const what = selectionName();
             canvas.deleteSelection();
             renderAll();
-            if (what) offerUndo(`Deleted ${what}.`);
         }
     });
 }
@@ -351,28 +349,22 @@ function afterHistory(label, verb) {
     canvas.select(selected ? { kind: selectedKind, id: selected.id } : null);
     renderAll();
     refreshPreview();
-    toast(`${verb}: ${label}`);
+    flashHistoryNote(`${verb} ${label}`);
 }
 
-function doUndo() { if (current) afterHistory(H.undo(current), 'Undone'); }
-function doRedo() { if (current) afterHistory(H.redo(current), 'Redone'); }
-
-function selectionName() {
-    if (!selected) return null;
-    if (selectedKind === 'node') return selected.type === NODE_TYPES.OUTPUT ? null : `"${selected.title || 'block'}"`;
-    if (selectedKind === 'wire') return 'the wire';
-    return null;
+/** A quiet note beside the undo buttons that fades on its own. */
+let noteTimer = null;
+function flashHistoryNote(text) {
+    const note = root?.querySelector('.pc-history-note');
+    if (!note) return;
+    note.textContent = text;
+    note.classList.add('pc-show');
+    clearTimeout(noteTimer);
+    noteTimer = setTimeout(() => note.classList.remove('pc-show'), 1600);
 }
 
-/** A toast that undoes when clicked, after something destructive. */
-function offerUndo(message) {
-    const t = safe(() => globalThis.toastr);
-    if (!t) return;
-    t.info(`${message} Click here to undo, or press Ctrl+Z.`, 'Silly Canvas', {
-        timeOut: 6000,
-        onclick: () => doUndo(),
-    });
-}
+function doUndo() { if (current) afterHistory(H.undo(current), 'Undid'); }
+function doRedo() { if (current) afterHistory(H.redo(current), 'Redid'); }
 
 function renderGraphSelect() {
     const sel = root._parts.graphSelect;
@@ -942,7 +934,6 @@ function renderNodeInspector(box) {
         del.innerHTML = '<i class="fa-solid fa-trash-can"></i> Delete this block';
         del.addEventListener('click', () => {
             removeNode(current, node.id);
-            offerUndo(`Deleted "${node.title || 'block'}".`);
             selected = null;
             canvas.render();
             renderInspector();
@@ -2141,8 +2132,7 @@ function onCanvasMenu({ event, node, wire, at }) {
         if (node.type !== NODE_TYPES.OUTPUT) {
             menu.append(item('Delete block', 'fa-trash-can', () => {
                 removeNode(current, node.id);
-                offerUndo(`Deleted "${node.title || 'block'}".`);
-                selected = null;
+                    selected = null;
                 canvas.render();
                 renderInspector();
             }));

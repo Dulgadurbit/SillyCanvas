@@ -32,15 +32,16 @@ window.dispatchEvent(new dom.window.MouseEvent('mouseup', { bubbles: true }));
 key('Delete');
 await tick();
 assert.ok(!g.nodes[n.id], 'deleted');
-const t = toasts.find(x => /Deleted "Scene"/.test(x.m));
-assert.ok(t, 'toast offers undo');
+assert.equal(toasts.length, 0, 'no popup on delete');
 assert.ok(!undoBtn.classList.contains('pc-disabled'));
 assert.match(undoBtn.title, /Undo: delete "Scene"/);
 
-// the toast's click undoes
-t.o.onclick();
+// undo brings it back, with a small note instead of a popup
+undoBtn.click();
 await tick();
-assert.ok(g.nodes[n.id], 'restored from the toast');
+assert.ok(g.nodes[n.id], 'restored');
+assert.equal(toasts.length, 0, 'no popup on undo either');
+assert.match(document.querySelector('.pc-history-note').textContent, /^Undid delete "Scene"$/);
 assert.ok(document.querySelector(`.pc-node[data-id="${n.id}"]`), 'and drawn');
 assert.match(redoBtn.title, /Redo: delete "Scene"/);
 

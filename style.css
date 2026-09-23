@@ -801,3 +801,11 @@
 /* ---- undo / redo --------------------------------------------------- */
 .pc-history { border-right: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.15)); padding-right: 6px; margin-right: 2px; }
 .pc-history .pc-btn.pc-disabled { opacity: 0.3; pointer-events: none; }
+.pc-history { position: relative; }
+.pc-history-note {
+    position: absolute; left: 0; top: calc(100% + 4px); z-index: 5;
+    white-space: nowrap; font-size: 0.78em; padding: 2px 8px; border-radius: 4px;
+    background: rgba(0, 0, 0, 0.55); pointer-events: none;
+    opacity: 0; transition: opacity 0.2s;
+}
+.pc-history-note.pc-show { opacity: 0.9; }
