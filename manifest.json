@@ -1,0 +1,12 @@
+{
+    "display_name": "Prompt Canvas",
+    "loading_order": 120,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "Hanno",
+    "version": "0.1.0",
+    "homePage": "",
+    "auto_update": false
+}
