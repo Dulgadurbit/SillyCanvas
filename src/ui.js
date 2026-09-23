@@ -14,12 +14,14 @@ import {
     chatBinding, setChatBinding, characterBinding, setCharacterBinding,
     exportGraph, importGraph, blankGraph, isFolderCollapsed, setFolderCollapsed, togetherGroup,
     newDeciderKey, removeDeciderKey, onGraphTouched,
-} from './state.js?v=0.7.0';
-import * as H from './history.js?v=0.7.0';
-import * as L from './library.js?v=0.7.0';
-import { compile, gatherContext, resolveNode, textOf, generateLevels, emissionCounts } from './compile.js?v=0.7.0';
-import { run, profileName, effectiveModel, callCount, testBlock, shapeForApi, inspectProfile, modelsForSource, sourceForBlock, cachedModels, fetchModelList, previewBlock } from './run.js?v=0.7.0';
-import { Canvas, WIRE_LABEL, TYPE_LABEL } from './canvas.js?v=0.7.0';
+} from './state.js?v=0.8.0';
+import { applyTheme } from './theme.js?v=0.8.0';
+import { renderThemeEditor } from './theme-editor.js?v=0.8.0';
+import * as H from './history.js?v=0.8.0';
+import * as L from './library.js?v=0.8.0';
+import { compile, gatherContext, resolveNode, textOf, generateLevels, emissionCounts } from './compile.js?v=0.8.0';
+import { run, profileName, effectiveModel, callCount, testBlock, shapeForApi, inspectProfile, modelsForSource, sourceForBlock, cachedModels, fetchModelList, previewBlock } from './run.js?v=0.8.0';
+import { Canvas, WIRE_LABEL, TYPE_LABEL } from './canvas.js?v=0.8.0';
 
 let root = null;
 let canvas = null;
@@ -134,6 +136,9 @@ export function isOpen() {
 export function open() {
     build();
     root.classList.add('pc-open');
+    // Your SillyTavern theme may have changed since the last look, and the
+    // light/dark adjustment depends on it.
+    safe(() => applyTheme());
     const r = resolveGraph();
     current = r.graph ?? allGraphs()[0] ?? createGraph('Default');
     canvas.setGraph(current);
@@ -196,6 +201,7 @@ function build() {
         mkBtn('fa-file-export', 'Export canvas', onExportGraph),
         mkBtn('fa-wand-magic-sparkles', 'Seed from SillyTavern’s current prompt order', onSeedFromST),
         mkBtn('fa-expand', 'Fit to view', () => canvas.fit()),
+        mkBtn('fa-palette', 'Theme and colours', toggleThemePopover, 'pc-theme-btn'),
     );
 
     const paneToggles = el('div', 'pc-header-actions');
@@ -312,6 +318,24 @@ function renderAll() {
     renderSidebar();
     renderInspector();
     canvas.render();
+}
+
+/** The theme editor, dropped down from the palette button. */
+function toggleThemePopover() {
+    const existing = root.querySelector('.pc-theme-pop');
+    if (existing) { existing.remove(); return; }
+    const pop = el('div', 'pc-theme-pop');
+    const head = el('div', 'pc-theme-pop-head');
+    head.append(el('b', '', 'Theme'), mkBtn('fa-xmark', 'Close', () => pop.remove(), 'pc-theme-pop-close'));
+    const body = el('div');
+    pop.append(head, body);
+    root.append(pop);
+    renderThemeEditor(body);
+    const away = (e) => {
+        if (!pop.isConnected) { document.removeEventListener('mousedown', away, true); return; }
+        if (!pop.contains(e.target) && !e.target.closest('.pc-theme-btn')) { pop.remove(); document.removeEventListener('mousedown', away, true); }
+    };
+    document.addEventListener('mousedown', away, true);
 }
 
 /* ------------------------------------------------------------------ */

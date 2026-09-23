@@ -86,6 +86,21 @@ A key can match on:
 
 Keys are checked from top to bottom, and the first match wins. The AI question is only asked if nothing above it has already matched. Or pick **Weighted random** to choose paths by chance.
 
+## Themes
+
+Click the palette button in the canvas header, or open the Silly Canvas section in the Extensions settings. There are six built-in themes:
+
+- **SillyTavern**: uses your SillyTavern theme for backgrounds and text
+- **Dark Night**: near black with bright, clear signals
+- **Blue Moon**: deep navy with pale accents
+- **Purple Prose**: plum and violet
+- **Pink Blink**: a light theme
+- **Brown Gown**: warm browns and parchment text
+
+Each colour stands for one thing everywhere it appears. Generate blocks, ties and the answers in the chat always share a colour, for example. Wire kinds also have their own dash patterns, so they can be told apart without colour.
+
+Under **Customise colours** you can change any colour, starting from the theme you picked. The canvas updates as you choose. If two colours are too alike, or text would be hard to read, you get a warning. On a light background, colours are darkened as needed so they stay readable. To share a theme, use **Copy my theme** and send the text. To use someone else's, paste it in and click **Use pasted theme**.
+
 ## Canvases
 
 You can keep several canvases and choose which one runs:

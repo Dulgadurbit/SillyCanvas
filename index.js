@@ -16,10 +16,12 @@
  * generation is worse than one that does nothing.
  */
 
-import { settings, save, resolveGraph, ctx, safe } from './src/state.js?v=0.7.0';
-import { run, callCount } from './src/run.js?v=0.7.0';
-import * as UI from './src/ui.js?v=0.7.0';
-import { renderThoughts, attachThoughts, repaintAll, livePanel } from './src/thoughts.js?v=0.7.0';
+import { settings, save, resolveGraph, ctx, safe } from './src/state.js?v=0.8.0';
+import { run, callCount } from './src/run.js?v=0.8.0';
+import * as UI from './src/ui.js?v=0.8.0';
+import { applyTheme } from './src/theme.js?v=0.8.0';
+import { renderThemeEditor } from './src/theme-editor.js?v=0.8.0';
+import { renderThoughts, attachThoughts, repaintAll, livePanel } from './src/thoughts.js?v=0.8.0';
 
 const MODULE = 'prompt-canvas';
 let lastRun = null;
@@ -288,6 +290,8 @@ function addLauncher() {
                     <div class="pc-settings-hint">
                         Tinted while the canvas is armed. Click to open, right-click to arm or disarm.
                     </div>
+                    <div class="pc-settings-sub"><b>Theme</b></div>
+                    <div id="pc-theme-editor"></div>
                     <div id="pc-open-btn" class="menu_button menu_button_icon">
                         <i class="fa-solid fa-diagram-project"></i><span>Open canvas</span>
                     </div>
@@ -320,6 +324,7 @@ function addLauncher() {
         });
 
         block.querySelector('#pc-open-btn').addEventListener('click', () => UI.open());
+        safe(() => renderThemeEditor(block.querySelector('#pc-theme-editor')));
     }
 }
 
@@ -435,6 +440,7 @@ export function getLastRun() {
         try {
             const c = ctx();
             settings();
+            safe(() => applyTheme());
 
             c.eventSource.on(c.eventTypes.CHAT_COMPLETION_PROMPT_READY, onChatCompletionPromptReady);
             c.eventSource.on(c.eventTypes.GENERATE_AFTER_COMBINE_PROMPTS, onTextCompletionPromptReady);
