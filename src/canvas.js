@@ -13,7 +13,7 @@
 
 import {
     NODE_TYPES, WIRE_KINDS, connect, disconnect, removeNode, touchGraph, wiresInto,
-} from './state.js';
+} from './state.js?v=0.2.0';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 

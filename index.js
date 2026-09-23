@@ -16,15 +16,17 @@
  * generation is worse than one that does nothing.
  */
 
-import { settings, save, resolveGraph, ctx, safe } from './src/state.js';
-import { run, callCount } from './src/run.js';
-import * as UI from './src/ui.js';
-import { renderThoughts, attachThoughts, repaintAll } from './src/thoughts.js';
+import { settings, save, resolveGraph, ctx, safe } from './src/state.js?v=0.2.0';
+import { run, callCount } from './src/run.js?v=0.2.0';
+import * as UI from './src/ui.js?v=0.2.0';
+import { renderThoughts, attachThoughts, repaintAll, livePanel } from './src/thoughts.js?v=0.2.0';
 
 const MODULE = 'prompt-canvas';
 let lastRun = null;
 let busy = false;
 let pendingThoughts = null;
+/** Aborts the Generate blocks of the run in progress, when you press Stop. */
+let currentAbort = null;
 
 /* ------------------------------------------------------------------ */
 /* generation hooks                                                    */
@@ -57,10 +59,20 @@ async function build(dryRun) {
         if (calls) console.log(`[${MODULE}] "${graph.name}": ${calls} model call${calls === 1 ? '' : 's'} before the send`);
 
         if (calls) progress.start(graph.name, calls);
-        const { plan, thoughts, failures } = await run(graph, {
+        if (!dryRun) { livePanel.clear(); pendingThoughts = null; }
+        const abort = dryRun ? null : new AbortController();
+        currentAbort = abort;
+        const { plan, thoughts, failures, aborted } = await run(graph, {
             dryRun,
-            onStage: (node) => progress.running(node.title),
-        }).finally(() => progress.done());
+            signal: abort?.signal ?? null,
+            onStage: (node) => { progress.running(node.title); safe(() => livePanel.running(node)); },
+            onResult: (entry) => safe(() => livePanel.result(entry)),
+        }).finally(() => { progress.done(); if (currentAbort === abort) currentAbort = null; });
+
+        if (aborted) {
+            console.log(`[${MODULE}] stopped before the send`);
+            return null;
+        }
 
         if (!plan.ok) {
             // An empty chat is a normal state, not a fault worth shouting about.
@@ -129,10 +141,24 @@ async function onTextCompletionPromptReady(eventData) {
  * be folded away under the reply instead of living only in a console log.
  */
 function onMessageReceived(messageId) {
+    safe(() => livePanel.clear());
     if (!pendingThoughts) return;
     const thoughts = pendingThoughts;
     pendingThoughts = null;
     safe(() => attachThoughts(messageId, thoughts));
+}
+
+/**
+ * Stop pressed. Cancel any Generate blocks still running so they stop being
+ * billed, and keep whatever answers already came back on screen.
+ */
+function onGenerationStopped() {
+    if (currentAbort && !currentAbort.signal.aborted) {
+        currentAbort.abort(new Error('Stopped'));
+        console.log(`[${MODULE}] Generate blocks cancelled`);
+    }
+    pendingThoughts = null;
+    safe(() => livePanel.dropPending());
 }
 
 /**
@@ -253,6 +279,13 @@ function addLauncher() {
                         Lower this if your provider or proxy refuses concurrent requests.
                         Two is a safe starting point.
                     </div>
+                    <label class="checkbox_label" for="pc-sendbar-opt">
+                        <input id="pc-sendbar-opt" type="checkbox">
+                        <span>Show a Prompt Canvas button next to Send</span>
+                    </label>
+                    <div class="pc-settings-hint">
+                        Tinted while the canvas is armed. Click to open, right-click to arm or disarm.
+                    </div>
                     <div id="pc-open-btn" class="menu_button menu_button_icon">
                         <i class="fa-solid fa-diagram-project"></i><span>Open canvas</span>
                     </div>
@@ -266,6 +299,15 @@ function addLauncher() {
             settings().enabled = cb.checked;
             save();
             UI.refreshIfOpen();
+            paintSendbar();
+        });
+        const sbo = block.querySelector('#pc-sendbar-opt');
+        sbo.checked = sendbarEnabled();
+        sbo.addEventListener('change', () => {
+            settings().ui ??= {};
+            settings().ui.sendbarButton = sbo.checked;
+            save();
+            addSendbarButton();
         });
         const conc = block.querySelector('#pc-concurrency');
         conc.value = safe(() => settings().concurrency) ?? 2;
@@ -284,6 +326,64 @@ function addLauncher() {
 }
 
 /**
+ * A button on the chat bar, next to Send. It carries state as well as opening
+ * the panel: tinted while the canvas is armed, plain while it is not, and the
+ * tooltip names the canvas that would actually run. Right-click arms or
+ * disarms it without opening anything.
+ */
+function sendbarEnabled() {
+    return safe(() => settings().ui?.sendbarButton) !== false;
+}
+
+function addSendbarButton() {
+    const bar = document.getElementById('rightSendForm');
+    const existing = document.getElementById('pc-sendbar');
+    if (!sendbarEnabled()) { existing?.remove(); return true; }
+    if (!bar) return false;
+    if (existing) { paintSendbar(); return true; }
+
+    const b = document.createElement('div');
+    b.id = 'pc-sendbar';
+    b.className = 'fa-solid fa-diagram-project interactable';
+    b.tabIndex = 0;
+    b.setAttribute('role', 'button');
+    b.addEventListener('click', () => UI.open());
+    b.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); UI.open(); } });
+    b.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        settings().enabled = !armed();
+        save();
+        UI.refreshIfOpen();
+        paintSendbar();
+        safe(() => globalThis.toastr?.info(armed()
+            ? 'Armed. Your canvas builds the prompt.'
+            : 'Off. SillyTavern builds the prompt as usual.', 'Prompt Canvas'));
+    });
+    b.addEventListener('mouseenter', paintSendbar);
+
+    const send = document.getElementById('send_but');
+    if (send && send.parentElement === bar) bar.insertBefore(b, send);
+    else bar.append(b);
+    paintSendbar();
+    return true;
+}
+
+function paintSendbar() {
+    const b = document.getElementById('pc-sendbar');
+    if (!b) return;
+    const on = armed();
+    const r = safe(() => resolveGraph()) ?? { graph: null, source: 'none' };
+    const from = { chat: 'pinned to this chat', character: 'pinned to this character', default: 'the default canvas' }[r.source];
+    b.classList.toggle('pc-sendbar-on', on && !!r.graph);
+    b.classList.toggle('pc-sendbar-nograph', on && !r.graph);
+    b.title = !on
+        ? 'Prompt Canvas is off — SillyTavern builds the prompt.\nClick to open. Right-click to arm.'
+        : r.graph
+            ? `Prompt Canvas is armed: "${r.graph.name}" (${from}) builds the prompt.\nClick to open. Right-click to switch off.`
+            : 'Prompt Canvas is armed but no canvas applies here, so SillyTavern builds the prompt.\nClick to open. Right-click to switch off.';
+}
+
+/**
  * SillyTavern builds the wand menu from a template after extensions load, so
  * the menu may not exist yet. Retry briefly rather than losing the entry.
  */
@@ -291,7 +391,8 @@ function mountLauncher() {
     let tries = 0;
     const tick = () => {
         addLauncher();
-        const done = document.getElementById('pc-menu-launch') && document.getElementById('pc-settings');
+        const bar = addSendbarButton();
+        const done = bar && document.getElementById('pc-menu-launch') && document.getElementById('pc-settings');
         if (!done && tries++ < 40) setTimeout(tick, 250);
     };
     tick();
@@ -307,8 +408,8 @@ function addSlashCommand() {
             unnamedArgumentList: [],
             callback: (_args, value) => {
                 const v = String(value ?? '').trim().toLowerCase();
-                if (v === 'arm' || v === 'on') { settings().enabled = true; save(); UI.refreshIfOpen(); return 'armed'; }
-                if (v === 'off' || v === 'disarm') { settings().enabled = false; save(); UI.refreshIfOpen(); return 'off'; }
+                if (v === 'arm' || v === 'on') { settings().enabled = true; save(); UI.refreshIfOpen(); paintSendbar(); return 'armed'; }
+                if (v === 'off' || v === 'disarm') { settings().enabled = false; save(); UI.refreshIfOpen(); paintSendbar(); return 'off'; }
                 UI.toggle();
                 return '';
             },
@@ -335,8 +436,10 @@ export function getLastRun() {
             c.eventSource.on(c.eventTypes.CHAT_COMPLETION_PROMPT_READY, onChatCompletionPromptReady);
             c.eventSource.on(c.eventTypes.GENERATE_AFTER_COMBINE_PROMPTS, onTextCompletionPromptReady);
             c.eventSource.on(c.eventTypes.MESSAGE_RECEIVED, onMessageReceived);
+            c.eventSource.on(c.eventTypes.GENERATION_STOPPED, onGenerationStopped);
             c.eventSource.on(c.eventTypes.CHARACTER_MESSAGE_RENDERED, (id) => safe(() => renderThoughts(id)));
-            c.eventSource.on(c.eventTypes.CHAT_CHANGED, () => { UI.refreshIfOpen(); safe(() => repaintAll()); });
+            c.eventSource.on(c.eventTypes.CHAT_CHANGED, () => { safe(() => livePanel.clear()); UI.refreshIfOpen(); safe(() => repaintAll()); paintSendbar(); });
+            document.addEventListener('pc-state', () => { paintSendbar(); const cb = document.getElementById('pc-enabled'); if (cb) cb.checked = armed(); });
 
             mountLauncher();
             addSlashCommand();

@@ -16,8 +16,8 @@
  *    recorded as the error, the run continues, and you see it in the trace.
  */
 
-import { ctx, safe, settings, NODE_TYPES, togetherGroup } from './state.js';
-import { compile, collect, generateOrder, generateLevels, gatherContext, evaluateCondition } from './compile.js';
+import { ctx, safe, settings, NODE_TYPES, togetherGroup } from './state.js?v=0.2.0';
+import { compile, collect, generateOrder, generateLevels, gatherContext, evaluateCondition } from './compile.js?v=0.2.0';
 
 /** The connection the chat itself is using, when a block does not name one. */
 function currentProfileId() {
@@ -332,7 +332,7 @@ async function askModel(rawMessages, node, signal = null) {
         } catch (err) {
             // Providers disagree about how to ask for less thinking, and a
             // rejected knob should not cost you the answer.
-            if (!effort) throw err;
+            if (!effort || signal?.aborted) throw err;
             console.warn(`[prompt-canvas] "${node.title}": ${source ?? 'this provider'} refused reasoning_effort "${effort}", asking again without it`);
             const reply = readReply(await send({ reasoning_effort: undefined, include_reasoning: undefined }), profile?.mode === 'tc');
             reply.thinkingIgnored = effort;
@@ -411,9 +411,10 @@ export function describeCutoff(title, usage, finish) {
  * @param {boolean} [options.dryRun] no model is called; placeholders stand in
  * @param {AbortSignal|null} [options.signal]
  * @param {(stage: object, index: number, total: number) => void} [options.onStage]
+ * @param {(entry: object) => void} [options.onResult] called as each block finishes, so its answer can be shown while the rest run
  * @returns {Promise<{plan: object, results: Record<string,string>, thoughts: Array}>}
  */
-export async function run(graph, { dryRun = false, signal = null, onStage = null } = {}) {
+export async function run(graph, { dryRun = false, signal = null, onStage = null, onResult = null } = {}) {
     const live = await gatherContext({ dryRun });
     const results = {};
     const thoughts = [];
@@ -436,6 +437,7 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
      * @returns {Promise<{node: object, ok: boolean, error?: string}|null>}
      */
     async function ask(gen, { retries = 1 } = {}) {
+        if (signal?.aborted) return { node: gen, ok: false, aborted: true, error: 'stopped' };
         if (!evaluateCondition(gen, live).pass) return null;
 
         const built = collect(graph, gen.id, live, results);
@@ -453,6 +455,11 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
                 if (cutoff) cutoffs.push(cutoff);
                 return { node: gen, ok: true };
             } catch (err) {
+                if (signal?.aborted) {
+                    // Stopped by you, not a failure: no retry, nothing recorded.
+                    results[gen.id] = '';
+                    return { node: gen, ok: false, aborted: true, error: 'stopped' };
+                }
                 const why = describeError(err);
                 console.error(`[prompt-canvas] "${gen.title}" failed: ${why}`, err);
                 if (attempt < retries && looksTransient(why)) {
@@ -486,9 +493,11 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
             finish: reply?.finish ?? null,
         };
         if (at === -1) thoughts.push(entry); else thoughts[at] = entry;
+        safe(() => onResult?.(entry));
     }
 
     for (const wave of waves) {
+        if (signal?.aborted) break;
         // A tie is something you drew on purpose, so it goes out together even
         // when automatic parallel sending is switched off. The global toggle
         // governs blocks that merely happen to be independent.
@@ -504,21 +513,27 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
             // Some providers and proxies simply will not take concurrent
             // requests. Rather than hand back a half-empty wave, try the ones
             // that failed again, one at a time, before giving up on them.
-            const stragglers = outcomes.filter(o => o && !o.ok).map(o => o.node);
+            const stragglers = signal?.aborted ? [] : outcomes.filter(o => o && !o.ok && !o.aborted).map(o => o.node);
             if (stragglers.length) {
                 console.warn(`[prompt-canvas] ${stragglers.length} block(s) failed in parallel; retrying one at a time`);
                 for (const gen of stragglers) {
                     done--;
                     const again = await ask(gen, { retries: 0 });
+                    if (again?.aborted) break;
                     if (again && !again.ok) failures.push({ title: gen.title, error: again.error });
                 }
             }
         } else {
             for (const gen of wave) {
                 const outcome = await ask(gen, { retries: 1 });
+                if (outcome?.aborted) break;
                 if (outcome && !outcome.ok) failures.push({ title: gen.title, error: outcome.error });
             }
         }
+    }
+
+    if (signal?.aborted) {
+        return { plan: { ok: false, quiet: true, reason: 'Stopped before the send.', stages: [], messages: [], warnings: [], trace: [], tokens: 0 }, results, thoughts, failures, cutoffs, aborted: true };
     }
 
     // Keep the answers in canvas order regardless of which finished first.

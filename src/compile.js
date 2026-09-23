@@ -22,8 +22,8 @@
  * no exceptions, because a graph you have to trace to predict is not a tool.
  */
 
-import { ctx, safe, NODE_TYPES, WIRE_KINDS, wiresInto, wiresOutOf, outputNode, togetherGroup, groupWires } from './state.js';
-import { stPrompt, MARKER_SOURCES } from './library.js';
+import { ctx, safe, NODE_TYPES, WIRE_KINDS, wiresInto, wiresOutOf, outputNode, togetherGroup, groupWires } from './state.js?v=0.2.0';
+import { stPrompt, MARKER_SOURCES } from './library.js?v=0.2.0';
 
 /* ------------------------------------------------------------------ */
 /* live context                                                        */
@@ -434,23 +434,29 @@ export function collect(graph, targetId, live, results = {}) {
             .filter(x => !!x.src)
             .sort((a, b) => byY(a.src, b.src));
 
+        // The trace entry for this block is written only after its inputs have
+        // been walked, so the trace reads in the order the prompt is sent:
+        // upstream blocks first, then this one.
         let own = [];
+        let entry = null;
         if (!cond.pass) {
-            trace.push({ id: nodeId, title: node.title, status: off ? 'off' : 'skipped', why: cond.why });
+            entry = { id: nodeId, title: node.title, status: off ? 'off' : 'skipped', why: cond.why };
         } else {
             const res = resolveNode(node, live);
             own = res.messages;
             warnings.push(...res.warnings);
             if (node.type !== NODE_TYPES.OUTPUT && node.type !== NODE_TYPES.NOTE && node.type !== NODE_TYPES.GENERATE) {
-                trace.push({
+                entry = {
                     id: nodeId,
                     title: node.title,
                     status: own.length ? 'in' : 'empty',
                     why: cond.why,
                     chars: textOf(own).length,
-                });
+                };
             }
         }
+        const ownFirstTrace = node.type === NODE_TYPES.GENERATE && node.contentPosition === 'before';
+        if (entry && ownFirstTrace) trace.push(entry);
 
         const before = [];
         const appendText = [];
@@ -484,7 +490,9 @@ export function collect(graph, targetId, live, results = {}) {
             }
         }
 
-        const ownFirst = node.type === NODE_TYPES.GENERATE && node.contentPosition === 'before';
+        if (entry && !ownFirstTrace) trace.push(entry);
+
+        const ownFirst = ownFirstTrace;
         const result = ownFirst ? [...own, ...before] : [...before, ...own];
         memo.set(nodeId, structuredClone(result));
         return result;

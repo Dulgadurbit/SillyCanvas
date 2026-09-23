@@ -691,3 +691,14 @@
     border-top: 1px solid rgba(255, 255, 255, 0.07);
     color: #f0c36a;
 }
+
+/* ---- chat bar button ---------------------------------------------- */
+#pc-sendbar { opacity: 0.55; transition: opacity 0.15s, color 0.15s; }
+#pc-sendbar:hover { opacity: 1; }
+#pc-sendbar.pc-sendbar-on { color: #7ab7ff; opacity: 1; }
+#pc-sendbar.pc-sendbar-nograph { color: #f0c36a; opacity: 1; }
+
+/* ---- live Generate answers at the bottom of the chat --------------- */
+.pc-live { margin: 6px 10px 10px; }
+.pc-thought-pending { opacity: 0.7; }
+.pc-thought-pending .pc-thought-arrow { transform: none !important; }

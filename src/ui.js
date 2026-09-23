@@ -13,11 +13,11 @@ import {
     addNode, removeNode, outputNode, connect, disconnect, resolveGraph,
     chatBinding, setChatBinding, characterBinding, setCharacterBinding,
     exportGraph, importGraph, blankGraph, isFolderCollapsed, setFolderCollapsed, togetherGroup,
-} from './state.js';
-import * as L from './library.js';
-import { compile, gatherContext, resolveNode, textOf, generateLevels, emissionCounts } from './compile.js';
-import { run, profileName, callCount, testBlock, shapeForApi, inspectProfile, modelsForSource, sourceForBlock, cachedModels, fetchModelList, previewBlock } from './run.js';
-import { Canvas, WIRE_LABEL, TYPE_LABEL } from './canvas.js';
+} from './state.js?v=0.2.0';
+import * as L from './library.js?v=0.2.0';
+import { compile, gatherContext, resolveNode, textOf, generateLevels, emissionCounts } from './compile.js?v=0.2.0';
+import { run, profileName, callCount, testBlock, shapeForApi, inspectProfile, modelsForSource, sourceForBlock, cachedModels, fetchModelList, previewBlock } from './run.js?v=0.2.0';
+import { Canvas, WIRE_LABEL, TYPE_LABEL } from './canvas.js?v=0.2.0';
 
 let root = null;
 let canvas = null;
@@ -304,6 +304,7 @@ function renderGraphSelect() {
 }
 
 function renderStatus() {
+    safe(() => document.dispatchEvent(new CustomEvent('pc-state')));
     const s = root._parts.status;
     const r = resolveGraph();
     const armed = !!settings().enabled;

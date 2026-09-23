@@ -1,4 +1,21 @@
-# Prompt Canvas
+# Silly Canvas
+
+A node canvas for building SillyTavern prompts. Instead of a fixed list, your
+prompt is a graph: blocks are prompts, wires say how they combine, and you can
+put extra model calls (Generate blocks) in the middle — a thinking pass that
+plans the scene before the reply is written, say. The whole graph compiles
+into the exact messages that will be sent, which you can read before a single
+token is spent. When it is switched off, SillyTavern behaves exactly as usual.
+
+## Install
+
+In SillyTavern: **Extensions → Install extension**, paste
+`https://github.com/Dulgadurbit/SillyCanvas`, and install. Then open it from the
+canvas button next to Send, the wand menu, or `/canvas`.
+
+---
+
+## Design notes
 
 A node canvas for SillyTavern prompts. Blocks are prompts, wires say how they
 combine, and the whole graph compiles into the message array that leaves the
