@@ -50,6 +50,12 @@ Drag from the bottom edge of a block onto another block.
 
 Double-click a wire to change its kind.
 
+## Undo
+
+Ctrl+Z undoes the last change to the canvas and Ctrl+Shift+Z (or Ctrl+Y) redoes it. The arrow buttons in the header do the same, and hovering them shows what they will undo. Deleting a block also shows a message you can click to bring it back.
+
+Each action is one step: adding, deleting, wiring, moving or switching a block. Typing into a block counts as one step per pause, not one per letter. While you are typing in a text box, Ctrl+Z undoes the typing as usual. Undo history lasts until you reload SillyTavern.
+
 ## Generate blocks
 
 A Generate block is a model call inside your prompt. Common uses:

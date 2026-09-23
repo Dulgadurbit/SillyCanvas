@@ -16,10 +16,10 @@
  * generation is worse than one that does nothing.
  */
 
-import { settings, save, resolveGraph, ctx, safe } from './src/state.js?v=0.6.0';
-import { run, callCount } from './src/run.js?v=0.6.0';
-import * as UI from './src/ui.js?v=0.6.0';
-import { renderThoughts, attachThoughts, repaintAll, livePanel } from './src/thoughts.js?v=0.6.0';
+import { settings, save, resolveGraph, ctx, safe } from './src/state.js?v=0.7.0';
+import { run, callCount } from './src/run.js?v=0.7.0';
+import * as UI from './src/ui.js?v=0.7.0';
+import { renderThoughts, attachThoughts, repaintAll, livePanel } from './src/thoughts.js?v=0.7.0';
 
 const MODULE = 'prompt-canvas';
 let lastRun = null;

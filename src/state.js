@@ -214,9 +214,18 @@ export function deleteGraph(id) {
     save();
 }
 
+const touchListeners = new Set();
+
+/** Be told about every change to any canvas (undo history listens here). */
+export function onGraphTouched(fn) {
+    touchListeners.add(fn);
+    return () => touchListeners.delete(fn);
+}
+
 export function touchGraph(graph) {
     if (graph) graph.updatedAt = Date.now();
     save();
+    if (graph) for (const fn of touchListeners) { try { fn(graph); } catch { /* ignore */ } }
 }
 
 /* ------------------------------------------------------------------ */
