@@ -8,7 +8,7 @@ const v = JSON.parse((await import('node:fs')).readFileSync(new URL('../manifest
 const T = await import(`../src/theme.js?v=${v}`);
 const MEANING = T.ROLES.filter(r => r.group === 'meaning').map(r => r.key);
 
-const needed = ['dark-night', 'blue-moon', 'purple-prose', 'pink-blink', 'brown-gown', 'sillytavern'];
+const needed = ['sillytavern', 'midnight', 'blueprint', 'parchment', 'neon', 'terminal', 'petal'];
 assert.deepEqual(needed.filter(k => !T.PRESETS[k]), []);
 const problems = [];
 for (const [key, p] of Object.entries(T.PRESETS)) {
@@ -45,18 +45,46 @@ assert.ok(w.some(x => x.kind === 'similar'));
 assert.ok(w.some(x => x.kind === 'contrast'));
 
 // export and import round trip, and custom colours sit on top of a preset
-T.setPreset('blue-moon');
+T.setPreset('blueprint');
 T.setColor('generate', '#ff00aa');
 const shared = T.exportTheme('Mine');
-T.setPreset('dark-night');
-assert.equal(T.currentTheme().colors.generate, T.PRESETS['dark-night'].colors.generate);
+T.setPreset('midnight');
+assert.equal(T.currentTheme().colors.generate, T.PRESETS['midnight'].colors.generate);
 assert.equal(T.importTheme(shared).ok, true);
-assert.equal(T.currentTheme().preset, 'blue-moon');
+assert.equal(T.currentTheme().preset, 'blueprint');
 assert.equal(T.currentTheme().colors.generate, '#ff00aa');
-assert.equal(T.currentTheme().colors.flow, T.PRESETS['blue-moon'].colors.flow);
+assert.equal(T.currentTheme().colors.flow, T.PRESETS['blueprint'].colors.flow);
 T.setColor('generate', null);
-assert.equal(T.currentTheme().colors.generate, T.PRESETS['blue-moon'].colors.generate, 'reset one role');
+assert.equal(T.currentTheme().colors.generate, T.PRESETS['blueprint'].colors.generate, 'reset one role');
 assert.equal(T.importTheme('not a theme').ok, false);
 assert.equal(T.importTheme('{"sillyCanvasTheme":1,"colors":{"flow":"javascript:alert(1)"}}').ok, true);
 assert.equal(T.currentTheme().custom.flow, undefined, 'junk values are dropped');
+// every preset has a look of its own: no two share all of shape, font, canvas and wires
+const looks = Object.entries(T.PRESETS).map(([k, p]) => [k, ['shape', 'font', 'grid', 'wires', 'header', 'depth'].map(x => p.style[x]).join('/')]);
+assert.equal(new Set(looks.map(x => x[1])).size, looks.length, JSON.stringify(looks));
+for (const [k, p] of Object.entries(T.PRESETS)) for (const [part, def] of Object.entries(T.STYLE_OPTIONS)) {
+    assert.ok(def.options.some(o => o[0] === p.style[part]), `${k}.${part}`);
+}
+// the look is put on the page, can be changed, and travels with a shared theme
+T.setPreset('blueprint');
+const root = globalThis.document?.documentElement;
+assert.equal(T.currentTheme().style.wires, 'angled');
+T.setStyle('wires', 'curved');
+assert.equal(T.currentTheme().style.wires, 'curved');
+assert.deepEqual(T.currentTheme().customStyle, { wires: 'curved' });
+T.setStyle('wires', 'angled');                     // the preset's own: not a change
+assert.deepEqual(T.currentTheme().customStyle, {});
+T.setStyle('font', 'serif');
+const withLook = T.exportTheme();
+T.setPreset('petal');
+assert.deepEqual(T.currentTheme().customStyle, {}, 'a new preset starts clean');
+T.importTheme(withLook);
+assert.equal(T.currentTheme().preset, 'blueprint');
+assert.equal(T.currentTheme().style.font, 'serif');
+T.setStyle('font', 'comic-sans');                  // not an option: ignored
+assert.equal(T.currentTheme().style.font, 'mono');
+// a theme saved under an old name finds its successor
+const s = globalThis.SillyTavern.getContext().extensionSettings['prompt-canvas'];
+s.ui.theme = { preset: 'pink-blink', colors: {} };
+assert.equal(T.currentTheme().preset, 'petal');
 console.log('themes: ok');

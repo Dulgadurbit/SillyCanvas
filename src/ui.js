@@ -14,16 +14,16 @@ import {
     chatBinding, setChatBinding, characterBinding, setCharacterBinding,
     exportGraph, importGraph, blankGraph, isFolderCollapsed, setFolderCollapsed, togetherGroup,
     newDeciderKey, removeDeciderKey, onGraphTouched, duplicateNode,
-} from './state.js?v=0.10.0';
-import { applyTheme } from './theme.js?v=0.10.0';
-import { renderThemeEditor } from './theme-editor.js?v=0.10.0';
-import * as H from './history.js?v=0.10.0';
-import * as L from './library.js?v=0.10.0';
-import { compile, gatherContext, resolveNode, textOf, generateLevels, emissionCounts, wirePreview, countTokens, routingMode, explainDecider, deciderInputList, collect } from './compile.js?v=0.10.0';
-import { LORE_POSITIONS } from './lore.js?v=0.10.0';
-import { DEFAULT_SELECT, isActive as selectActive, selectLabel } from './select.js?v=0.10.0';
-import { run, profileName, effectiveModel, callCount, testBlock, shapeForApi, inspectProfile, modelsForSource, sourceForBlock, cachedModels, fetchModelList, previewBlock } from './run.js?v=0.10.0';
-import { Canvas, WIRE_LABEL, TYPE_LABEL } from './canvas.js?v=0.10.0';
+} from './state.js?v=0.11.0';
+import { applyTheme } from './theme.js?v=0.11.0';
+import { renderThemeEditor } from './theme-editor.js?v=0.11.0';
+import * as H from './history.js?v=0.11.0';
+import * as L from './library.js?v=0.11.0';
+import { compile, gatherContext, resolveNode, textOf, generateLevels, emissionCounts, wirePreview, countTokens, routingMode, explainDecider, deciderInputList, collect } from './compile.js?v=0.11.0';
+import { LORE_POSITIONS } from './lore.js?v=0.11.0';
+import { DEFAULT_SELECT, isActive as selectActive, selectLabel } from './select.js?v=0.11.0';
+import { run, profileName, effectiveModel, callCount, testBlock, shapeForApi, inspectProfile, modelsForSource, sourceForBlock, cachedModels, fetchModelList, previewBlock } from './run.js?v=0.11.0';
+import { Canvas, WIRE_LABEL, TYPE_LABEL } from './canvas.js?v=0.11.0';
 
 let root = null;
 let canvas = null;
@@ -249,6 +249,8 @@ function build() {
         root.classList.add('pc-hide-sidebar', 'pc-hide-inspector');
     }
     syncPaneToggles();
+
+    document.addEventListener('pc-theme', () => { if (canvas && isOpen()) canvas.render(); });
 
     canvas = new Canvas(canvasHost, {
         onSelect: (item, kind) => { selected = item; selectedKind = kind; renderInspector(); },

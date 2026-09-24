@@ -21,18 +21,32 @@ const prop = (k) => root.style.getPropertyValue(`--pc-${k}`);
 const box = document.getElementById('drawer');
 E.renderThemeEditor(box);
 const names = [...box.querySelectorAll('.pc-th-preset .pc-th-name')].map(n => n.textContent);
-for (const want of ['SillyTavern', 'Dark Night', 'Blue Moon', 'Purple Prose', 'Pink Blink', 'Brown Gown']) assert.ok(names.includes(want), want);
+for (const want of ['SillyTavern', 'Midnight', 'Blueprint', 'Parchment', 'Neon', 'Terminal', 'Petal']) assert.ok(names.includes(want), want);
 assert.equal(box.querySelectorAll('.pc-th-preset')[0].querySelectorAll('.pc-th-swatch').length, 7, 'swatches preview each theme');
 
-// choose Blue Moon
-[...box.querySelectorAll('.pc-th-preset')].find(b => b.textContent.includes('Blue Moon')).click();
-assert.equal(T.currentTheme().preset, 'blue-moon');
-assert.equal(prop('panel'), T.PRESETS['blue-moon'].colors.panel);
-assert.equal(prop('generate'), T.PRESETS['blue-moon'].colors.generate);
+// choose Blueprint
+[...box.querySelectorAll('.pc-th-preset')].find(b => b.textContent.includes('Blueprint')).click();
+assert.equal(T.currentTheme().preset, 'blueprint');
+assert.equal(prop('panel'), T.PRESETS['blueprint'].colors.panel);
+assert.equal(prop('generate'), T.PRESETS['blueprint'].colors.generate);
 assert.ok([...box.querySelectorAll('.pc-th-preset.pc-on')].length === 1);
 
-// Pink Blink is light: text on colour pills flips to white
-[...box.querySelectorAll('.pc-th-preset')].find(b => b.textContent.includes('Pink Blink')).click();
+// the look is on the page: Blueprint is sharp, mono, a grid, right-angled wires
+assert.equal(root.dataset.pcShape, 'sharp');
+assert.equal(root.dataset.pcWires, 'angled');
+assert.equal(root.dataset.pcGrid, 'lines');
+assert.match(prop('font'), /monospace/);
+assert.equal(root.dataset.pcOwn, '1', 'styles SillyTavern\u2019s controls in the panel');
+// change the look in the editor
+box.querySelector('.pc-th-look').open = true;
+const shapeSel = [...box.querySelectorAll('.pc-th-look-select')].find(s => [...s.options].some(o => o.value === 'soft'));
+shapeSel.value = 'soft'; shapeSel.dispatchEvent(new dom.window.Event('change'));
+assert.equal(root.dataset.pcShape, 'soft');
+assert.match(box.querySelector('.pc-th-look summary').textContent, /1 changed/);
+T.setStyle('shape', null);
+
+// Petal is light: text on colour pills flips to white
+[...box.querySelectorAll('.pc-th-preset')].find(b => b.textContent.includes('Petal')).click();
 assert.equal(root.dataset.pcLight, '1');
 assert.equal(prop('on-accent'), '#ffffff');
 
@@ -40,10 +54,10 @@ assert.equal(prop('on-accent'), '#ffffff');
 box.querySelector('.pc-th-custom').open = true;
 const row = [...box.querySelectorAll('.pc-th-row')].find(r => r.textContent.includes('Append'));
 const input = row.querySelector('input[type=color]');
-input.value = T.PRESETS['pink-blink'].colors.flow;               // same as Flow
+input.value = T.PRESETS['petal'].colors.flow;               // same as Flow
 input.dispatchEvent(new dom.window.Event('input'));
 input.dispatchEvent(new dom.window.Event('change'));
-assert.equal(T.currentTheme().custom.append, T.PRESETS['pink-blink'].colors.flow);
+assert.equal(T.currentTheme().custom.append, T.PRESETS['petal'].colors.flow);
 assert.ok(box.querySelector('.pc-th-custom').open, 'stays open while editing');
 assert.match(box.querySelector('.pc-th-warnings').textContent, /very close/);
 assert.match(box.querySelector('.pc-th-custom summary').textContent, /1 changed/);
@@ -59,11 +73,11 @@ box.querySelector('.pc-th-share').open = true;
 await new Promise(r => setTimeout(r, 10));
 const shared = box.querySelector('.pc-th-text').value;
 assert.match(shared, /sillyCanvasTheme/);
-T.setPreset('dark-night');
+T.setPreset('midnight');
 E.renderThemeEditor(box);
 box.querySelector('.pc-th-text').value = shared;
 [...box.querySelectorAll('.pc-th-btn')].find(b => b.textContent === 'Use pasted theme').click();
-assert.equal(T.currentTheme().preset, 'pink-blink');
+assert.equal(T.currentTheme().preset, 'petal');
 assert.equal(T.currentTheme().custom.decider, '#123456');
 assert.match(box.querySelector('.pc-th-msg').textContent, /Now using/);
 
@@ -73,9 +87,9 @@ await new Promise(r => setTimeout(r, 30));
 document.querySelector('.pc-theme-btn').click();
 const pop = document.querySelector('.pc-theme-pop');
 assert.ok(pop?.querySelector('.pc-th-preset'), 'popover shows the editor');
-[...pop.querySelectorAll('.pc-th-preset')].find(b => b.textContent.includes('Brown Gown')).click();
-assert.equal(T.currentTheme().preset, 'brown-gown');
-assert.ok(box.querySelector('.pc-th-preset.pc-on').textContent.includes('Brown Gown'), 'the drawer editor follows');
+[...pop.querySelectorAll('.pc-th-preset')].find(b => b.textContent.includes('Parchment')).click();
+assert.equal(T.currentTheme().preset, 'parchment');
+assert.ok(box.querySelector('.pc-th-preset.pc-on').textContent.includes('Parchment'), 'the drawer editor follows');
 document.body.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true }));
 assert.equal(document.querySelector('.pc-theme-pop'), null, 'closes on a click outside');
 console.log('theme-ui: ok');

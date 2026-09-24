@@ -16,8 +16,8 @@
  *    recorded as the error, the run continues, and you see it in the trace.
  */
 
-import { ctx, safe, settings, save as saveSettings, NODE_TYPES, togetherGroup, loopWires, loopSection } from './state.js?v=0.10.0';
-import { compile, collect, generateOrder, generateLevels, gatherContext, evaluateCondition, liveNodes, generateDeps, textOf, picks } from './compile.js?v=0.10.0';
+import { ctx, safe, settings, save as saveSettings, NODE_TYPES, togetherGroup, loopWires, loopSection } from './state.js?v=0.11.0';
+import { compile, collect, generateOrder, generateLevels, gatherContext, evaluateCondition, liveNodes, generateDeps, textOf, picks } from './compile.js?v=0.11.0';
 
 /** The connection the chat itself is using, when a block does not name one. */
 function currentProfileId() {

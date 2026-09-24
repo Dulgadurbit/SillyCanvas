@@ -13,8 +13,8 @@
 
 import {
     NODE_TYPES, WIRE_KINDS, connect, disconnect, removeNode, touchGraph, wiresInto, deciderKeys,
-} from './state.js?v=0.10.0';
-import { selectLabel } from './select.js?v=0.10.0';
+} from './state.js?v=0.11.0';
+import { selectLabel } from './select.js?v=0.11.0';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -162,8 +162,24 @@ export class Canvas {
     applyTransform() {
         const v = this.view;
         this.viewport.style.transform = `translate(${v.x}px, ${v.y}px) scale(${v.zoom})`;
-        this.host.style.backgroundPosition = `${v.x}px ${v.y}px`;
-        this.host.style.backgroundSize = `${24 * v.zoom}px ${24 * v.zoom}px`;
+        // The canvas background moves and scales with the graph. Each theme
+        // background has its own layers, so each gets sizes to match.
+        const s = 24 * v.zoom;
+        const at = `${v.x}px ${v.y}px`;
+        const grid = globalThis.document?.documentElement?.dataset?.pcGrid ?? 'dots';
+        if (grid === 'lines') {
+            this.host.style.backgroundSize = `${s}px ${s}px, ${s}px ${s}px, ${s * 5}px ${s * 5}px, ${s * 5}px ${s * 5}px`;
+            this.host.style.backgroundPosition = `${at}, ${at}, ${at}, ${at}`;
+        } else if (grid === 'paper') {
+            this.host.style.backgroundSize = `${s * 1.5}px ${s * 1.5}px, 100% 100%`;
+            this.host.style.backgroundPosition = `${at}, 0 0`;
+        } else if (grid === 'scan') {
+            this.host.style.backgroundSize = `auto, 100% 100%`;
+            this.host.style.backgroundPosition = `0 0, 0 0`;
+        } else {
+            this.host.style.backgroundSize = `${s}px ${s}px`;
+            this.host.style.backgroundPosition = at;
+        }
     }
 
     /** Screen coordinates to graph coordinates. */
@@ -726,6 +742,17 @@ export class Canvas {
     }
 
     #path(from, to) {
+        // Right-angled wires, for themes that ask for them: down, across,
+        // down, with small rounded turns (none on sharp themes).
+        const look = globalThis.document?.documentElement?.dataset ?? {};
+        if (look.pcWires === 'angled' && to.y - from.y > 30) {
+            const r = look.pcShape === 'sharp' ? 0 : Math.min(10, Math.abs(to.x - from.x) / 2, (to.y - from.y) / 4);
+            const mid = from.y + (to.y - from.y) / 2;
+            if (Math.abs(to.x - from.x) < 1) return `M ${from.x} ${from.y} L ${to.x} ${to.y}`;
+            const dir = to.x > from.x ? 1 : -1;
+            return `M ${from.x} ${from.y} L ${from.x} ${mid - r} Q ${from.x} ${mid} ${from.x + dir * r} ${mid} `
+                + `L ${to.x - dir * r} ${mid} Q ${to.x} ${mid} ${to.x} ${mid + r} L ${to.x} ${to.y}`;
+        }
         const dy = Math.max(40, Math.abs(to.y - from.y) * 0.5);
         return `M ${from.x} ${from.y} C ${from.x} ${from.y + dy}, ${to.x} ${to.y - dy}, ${to.x} ${to.y}`;
     }

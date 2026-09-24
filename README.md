@@ -160,18 +160,23 @@ Combine it with the wire modes: an **Activate** wire from an output switches a b
 
 ## Themes
 
-Click the palette button in the canvas header, or open the Silly Canvas section in the Extensions settings. There are six built-in themes:
+Click the palette button in the canvas header, or open the Silly Canvas section in the Extensions settings. Each built-in theme has its own look, not just its own colours:
 
-- **SillyTavern**: uses your SillyTavern theme for backgrounds and text
-- **Dark Night**: near black with bright, clear signals
-- **Blue Moon**: deep navy with pale accents
-- **Purple Prose**: plum and violet
-- **Pink Blink**: a light theme
-- **Brown Gown**: warm browns and parchment text
+| Theme | Look |
+|---|---|
+| **SillyTavern** | Follows your SillyTavern theme for backgrounds, text and font |
+| **Midnight** | Clean modern dark, rounded, deep shadows, dot grid |
+| **Blueprint** | Blue drafting paper: grid lines, sharp outlines, typewriter labels, right-angled wires |
+| **Parchment** | A light storybook page: cream paper, book serif, ink-brown lines, coloured headers |
+| **Neon** | Black and violet, glowing wires and edges, bold lines, soft round shapes |
+| **Terminal** | Green phosphor on black: monospace, square boxes, scanlines, right-angled wires |
+| **Petal** | Light and rosy: round shapes, a friendly font, coloured headers |
+
+Under **Change the look** you can mix your own: shape (sharp, rounded, soft), font, canvas background (dots, grid lines, paper, scanlines, plain), curved or right-angled wires, line weight, block headers coloured by type, and depth (flat, shadows or glow). Every theme except SillyTavern also restyles SillyTavern's own buttons and fields inside the canvas, so light themes read properly.
 
 Each colour stands for one thing everywhere it appears. Generate blocks, ties and the answers in the chat always share a colour, for example. Wire kinds also have their own dash patterns, so they can be told apart without colour.
 
-Under **Customise colours** you can change any colour, starting from the theme you picked. The canvas updates as you choose. If two colours are too alike, or text would be hard to read, you get a warning. On a light background, colours are darkened as needed so they stay readable. To share a theme, use **Copy my theme** and send the text. To use someone else's, paste it in and click **Use pasted theme**.
+Under **Customise colours** you can change any colour, starting from the theme you picked. The canvas updates as you choose. If two colours are too alike, or text would be hard to read, you get a warning. On a light background, colours are darkened as needed so they stay readable. To share a theme (colours and look), use **Copy my theme** and send the text. To use someone else's, paste it in and click **Use pasted theme**.
 
 ## Canvases
 

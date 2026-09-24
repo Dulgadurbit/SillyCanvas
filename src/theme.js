@@ -12,7 +12,7 @@
  * always be got back, and a shared theme is a short piece of JSON.
  */
 
-import { settings, save, safe } from './state.js?v=0.10.0';
+import { settings, save, safe } from './state.js?v=0.11.0';
 
 /** The roles, in the order the editor lists them. */
 export const ROLES = [
@@ -33,65 +33,108 @@ export const ROLES = [
 const MEANING = ROLES.filter(r => r.group === 'meaning').map(r => r.key);
 
 /**
+ * The look of a theme, apart from its colours. Each is a small choice, set on
+ * the page as data attributes and CSS variables that style.css reads.
+ */
+export const STYLE_OPTIONS = {
+    shape: { label: 'Shape', options: [['sharp', 'Sharp corners'], ['rounded', 'Rounded'], ['soft', 'Soft and round']] },
+    font: { label: 'Font', options: [['theme', 'SillyTavern’s'], ['sans', 'Clean sans'], ['round', 'Friendly rounded'], ['serif', 'Book serif'], ['mono', 'Typewriter mono']] },
+    grid: { label: 'Canvas', options: [['dots', 'Dots'], ['lines', 'Grid lines'], ['paper', 'Paper'], ['scan', 'Scanlines'], ['none', 'Plain']] },
+    wires: { label: 'Wires', options: [['curved', 'Curved'], ['angled', 'Right angles']] },
+    weight: { label: 'Lines', options: [['thin', 'Thin'], ['normal', 'Normal'], ['bold', 'Bold']] },
+    header: { label: 'Block headers', options: [['tint', 'Quiet'], ['strip', 'Coloured by type']] },
+    depth: { label: 'Depth', options: [['flat', 'Flat'], ['soft', 'Soft shadow'], ['deep', 'Deep shadow'], ['glow', 'Glow']] },
+};
+const DEFAULT_STYLE = { shape: 'rounded', font: 'theme', grid: 'dots', wires: 'curved', weight: 'normal', header: 'tint', depth: 'soft' };
+
+const FONTS = {
+    sans: `system-ui, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif`,
+    round: `Nunito, Quicksand, 'Varela Round', 'Segoe UI', system-ui, sans-serif`,
+    serif: `'Iowan Old Style', 'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, serif`,
+    mono: `'Cascadia Mono', 'JetBrains Mono', Consolas, 'Courier New', ui-monospace, monospace`,
+};
+const RADII = { sharp: [2, 1, 3], rounded: [8, 5, 10], soft: [16, 10, 999] };
+const WEIGHTS = { thin: [1, 1.6], normal: [1, 2.5], bold: [2, 3.5] };
+
+/**
  * Built-in themes. "SillyTavern" leaves the surfaces to your SillyTavern
- * theme; the others set everything.
+ * theme; the others set everything, and each has a look of its own.
  */
 export const PRESETS = {
     sillytavern: {
         name: 'SillyTavern',
-        note: 'Follows your SillyTavern theme for backgrounds and text.',
+        note: 'Follows your SillyTavern theme for backgrounds, text and font.',
+        style: { ...DEFAULT_STYLE },
         colors: {
             muted: '#9aa0a6',
             flow: '#7ab7ff', append: '#7fd18c', prepend: '#5fd4c8', generate: '#d48fe0',
             decider: '#ff8c42', warn: '#f0c36a', error: '#e08f8f',
         },
     },
-    'dark-night': {
-        name: 'Dark Night',
-        note: 'Near black, cool greys, clear bright signals.',
+    midnight: {
+        name: 'Midnight',
+        note: 'Clean modern dark. Deep shadows, a dot grid, clear bright signals.',
+        style: { shape: 'rounded', font: 'sans', grid: 'dots', wires: 'curved', weight: 'normal', header: 'tint', depth: 'deep' },
         colors: {
-            panel: '#0d1015', block: '#161b22', canvas: '#0a0d11', border: '#2a313c', text: '#d8dde4', muted: '#8b949e',
+            panel: '#0d1015', block: '#171c24', canvas: '#0a0d11', border: '#2a313c', text: '#dfe4ea', muted: '#8b949e',
             flow: '#58a6ff', append: '#3fb950', prepend: '#39c5cf', generate: '#bc8cff',
             decider: '#f0883e', warn: '#e3c341', error: '#f85149',
         },
     },
-    'blue-moon': {
-        name: 'Blue Moon',
-        note: 'Deep navy with pale moonlit accents.',
+    blueprint: {
+        name: 'Blueprint',
+        note: 'Drafting paper: a blue grid, sharp outlines, typewriter labels and right-angled wires.',
+        style: { shape: 'sharp', font: 'mono', grid: 'lines', wires: 'angled', weight: 'thin', header: 'tint', depth: 'flat' },
         colors: {
-            panel: '#0e1a2f', block: '#15243e', canvas: '#0a1424', border: '#2b4066', text: '#dbe6ff', muted: '#8ea3c7',
-            flow: '#7cc4ff', append: '#6ee7a8', prepend: '#5eead4', generate: '#b3a4ff',
-            decider: '#ffb37a', warn: '#fde68a', error: '#ff9b9b',
+            panel: '#0b2747', block: '#0f3561', canvas: '#12406f', border: '#8fb8e8', text: '#eef5ff', muted: '#a3c1e6',
+            flow: '#7fdbff', append: '#a6f29c', prepend: '#5ef0d8', generate: '#ffb3ef',
+            decider: '#ffc44d', warn: '#fff38a', error: '#ff8f8f',
         },
     },
-    'purple-prose': {
-        name: 'Purple Prose',
-        note: 'Plum and violet, for florid storytelling.',
+    parchment: {
+        name: 'Parchment',
+        note: 'A light storybook page: cream paper, ink-brown lines, a book serif and coloured chapter headers.',
+        style: { shape: 'rounded', font: 'serif', grid: 'paper', wires: 'curved', weight: 'normal', header: 'strip', depth: 'soft' },
         colors: {
-            panel: '#1a1226', block: '#251a35', canvas: '#140e1f', border: '#43305e', text: '#efe5fb', muted: '#ab98c4',
-            flow: '#8fb8ff', append: '#7dd3a8', prepend: '#6fd6d0', generate: '#e39bff',
-            decider: '#ff9e7a', warn: '#f7d774', error: '#ff7a93',
+            panel: '#efe3c8', block: '#fbf5e4', canvas: '#f3e8cf', border: '#b99c6f', text: '#3a2918', muted: '#7d6547',
+            flow: '#2f5d8a', append: '#4d7a2e', prepend: '#2c7a70', generate: '#7a3b8a',
+            decider: '#a4521c', warn: '#8a6a00', error: '#a8322a',
         },
     },
-    'pink-blink': {
-        name: 'Pink Blink',
-        note: 'Light and rosy. The light theme of the set.',
+    neon: {
+        name: 'Neon',
+        note: 'Black and violet with glowing wires and edges, bold lines and coloured headers.',
+        style: { shape: 'soft', font: 'sans', grid: 'lines', wires: 'curved', weight: 'bold', header: 'strip', depth: 'glow' },
         colors: {
-            panel: '#fff0f6', block: '#ffffff', canvas: '#ffe3ee', border: '#f0b2cb', text: '#3b1f2b', muted: '#8f5d73',
-            flow: '#1d5fd6', append: '#15803d', prepend: '#0f766e', generate: '#b0209f',
-            decider: '#c2410c', warn: '#9a6700', error: '#d0203a',
+            panel: '#0a0612', block: '#140c24', canvas: '#07040d', border: '#3d2670', text: '#f4ecff', muted: '#a592cc',
+            flow: '#00e5ff', append: '#39ff88', prepend: '#b9ff3d', generate: '#ff4dff',
+            decider: '#ffae00', warn: '#fff04d', error: '#ff3d6e',
         },
     },
-    'brown-gown': {
-        name: 'Brown Gown',
-        note: 'Warm leather browns and parchment text.',
+    terminal: {
+        name: 'Terminal',
+        note: 'Green phosphor on black: typewriter text, square boxes, scanlines and right-angled wires.',
+        style: { shape: 'sharp', font: 'mono', grid: 'scan', wires: 'angled', weight: 'normal', header: 'tint', depth: 'flat' },
         colors: {
-            panel: '#1f1712', block: '#2b2019', canvas: '#18120e', border: '#4d3a2b', text: '#f1e4d3', muted: '#b39b83',
-            flow: '#8fb4d9', append: '#a3c77e', prepend: '#7cc7b5', generate: '#cfa3e0',
-            decider: '#e8915a', warn: '#f0c36a', error: '#e27a6f',
+            panel: '#040804', block: '#091109', canvas: '#030603', border: '#1f6a2c', text: '#8dff9c', muted: '#4fa35c',
+            flow: '#3dff6b', append: '#d4ff3d', prepend: '#3dffe0', generate: '#ff7ae5',
+            decider: '#ffb000', warn: '#fff23d', error: '#ff4d4d',
+        },
+    },
+    petal: {
+        name: 'Petal',
+        note: 'Soft and light: rosy paper, round shapes, a friendly font and coloured headers.',
+        style: { shape: 'soft', font: 'round', grid: 'dots', wires: 'curved', weight: 'normal', header: 'strip', depth: 'soft' },
+        colors: {
+            panel: '#fff4f8', block: '#ffffff', canvas: '#ffeaf2', border: '#efb9cc', text: '#3d2230', muted: '#8e6477',
+            flow: '#2563eb', append: '#15803d', prepend: '#0e7490', generate: '#a21caf',
+            decider: '#c2410c', warn: '#a16207', error: '#be123c',
         },
     },
 };
+
+/** Themes that were renamed, so a saved choice still finds its successor. */
+const RENAMED = { 'dark-night': 'midnight', 'blue-moon': 'blueprint', 'purple-prose': 'neon', 'pink-blink': 'petal', 'brown-gown': 'parchment' };
 
 export const DEFAULT_PRESET = 'sillytavern';
 
@@ -165,8 +208,10 @@ export function fitContrast(color, bg, target = 3) {
 
 function store() {
     const ui = (settings().ui ??= {});
-    ui.theme ??= { preset: DEFAULT_PRESET, colors: {} };
+    ui.theme ??= { preset: DEFAULT_PRESET, colors: {}, style: {} };
     ui.theme.colors ??= {};
+    ui.theme.style ??= {};
+    if (RENAMED[ui.theme.preset]) ui.theme.preset = RENAMED[ui.theme.preset];
     if (!PRESETS[ui.theme.preset]) ui.theme.preset = DEFAULT_PRESET;
     return ui.theme;
 }
@@ -174,13 +219,21 @@ function store() {
 /** The chosen preset plus your own changes. */
 export function currentTheme() {
     const t = store();
-    return { preset: t.preset, colors: { ...PRESETS[t.preset].colors, ...t.colors }, custom: { ...t.colors } };
+    const p = PRESETS[t.preset];
+    return {
+        preset: t.preset,
+        colors: { ...p.colors, ...t.colors },
+        custom: { ...t.colors },
+        style: { ...DEFAULT_STYLE, ...p.style, ...t.style },
+        customStyle: { ...t.style },
+    };
 }
 
 export function setPreset(key, { keepCustom = false } = {}) {
     const t = store();
+    key = RENAMED[key] ?? key;
     t.preset = PRESETS[key] ? key : DEFAULT_PRESET;
-    if (!keepCustom) t.colors = {};
+    if (!keepCustom) { t.colors = {}; t.style = {}; }
     save();
     applyTheme();
 }
@@ -189,6 +242,16 @@ export function setColor(role, value) {
     const t = store();
     if (value === null || value === undefined || value === '') delete t.colors[role];
     else t.colors[role] = value;
+    save();
+    applyTheme();
+}
+
+/** Change one part of the look (shape, font, ...). null goes back to the preset's. */
+export function setStyle(part, value) {
+    const t = store();
+    const opts = STYLE_OPTIONS[part]?.options.map(o => o[0]) ?? [];
+    if (value === null || value === undefined || !opts.includes(value) || value === PRESETS[t.preset].style?.[part]) delete t.style[part];
+    else t.style[part] = value;
     save();
     applyTheme();
 }
@@ -220,8 +283,24 @@ function measuredSurfaces(colors) {
 export function applyTheme() {
     const doc = globalThis.document;
     if (!doc?.documentElement) return;
-    const { colors } = currentTheme();
+    const { colors, style, preset } = currentTheme();
     const root = doc.documentElement.style;
+    const data = doc.documentElement.dataset;
+
+    // The look: data attributes for style.css, and a few sizes as variables.
+    for (const part of Object.keys(STYLE_OPTIONS)) data[`pc${part[0].toUpperCase()}${part.slice(1)}`] = style[part];
+    // A theme with its own surfaces also styles SillyTavern's buttons and
+    // fields inside the panel, which otherwise keep SillyTavern's colours.
+    data.pcOwn = preset === 'sillytavern' && !colors.panel ? '0' : '1';
+    const [r, rSm, rChip] = RADII[style.shape] ?? RADII.rounded;
+    root.setProperty('--pc-r', `${r}px`);
+    root.setProperty('--pc-r-sm', `${rSm}px`);
+    root.setProperty('--pc-r-chip', `${rChip}px`);
+    const [bw, ww] = WEIGHTS[style.weight] ?? WEIGHTS.normal;
+    root.setProperty('--pc-bw', `${bw}px`);
+    root.setProperty('--pc-wire-w', String(ww));
+    if (FONTS[style.font]) root.setProperty('--pc-font', FONTS[style.font]);
+    else root.removeProperty('--pc-font');
     for (const r of ROLES) root.removeProperty(`--pc-${r.key}`);
     root.removeProperty('--pc-panel-solid');
     root.removeProperty('--pc-on-accent');
@@ -245,6 +324,13 @@ export function applyTheme() {
         const fitted = fitContrast(c, bg, 3);
         if (fitted !== c) root.setProperty(`--pc-${key}`, toHex(fitted));
     }
+    // The canvas draws wires and its background from the look, so tell it.
+    safe(() => doc.dispatchEvent(new CustomEvent('pc-theme')));
+}
+
+/** The font stack a look uses, for showing a preset's name in its own font. */
+export function fontFor(style) {
+    return FONTS[style?.font] ?? null;
 }
 
 /**
@@ -273,8 +359,9 @@ export function themeWarnings(colors = currentTheme().colors) {
 /* ------------------------------------------------------------------ */
 
 export function exportTheme(name = null) {
-    const { preset, custom } = currentTheme();
-    return JSON.stringify({ sillyCanvasTheme: 1, name: name || PRESETS[preset].name + (Object.keys(custom).length ? ' (custom)' : ''), base: preset, colors: custom });
+    const { preset, custom, customStyle } = currentTheme();
+    const changed = Object.keys(custom).length + Object.keys(customStyle).length;
+    return JSON.stringify({ sillyCanvasTheme: 1, name: name || PRESETS[preset].name + (changed ? ' (custom)' : ''), base: preset, colors: custom, style: customStyle });
 }
 
 /** @returns {{ok: boolean, reason?: string, name?: string}} */
@@ -287,9 +374,16 @@ export function importTheme(text) {
         const v = o.colors[r.key];
         if (v !== undefined && parseColor(v)) colors[r.key] = toHex(parseColor(v));
     }
+    const style = {};
+    for (const [part, def] of Object.entries(STYLE_OPTIONS)) {
+        const v = o.style?.[part];
+        if (def.options.some(x => x[0] === v)) style[part] = v;
+    }
     const t = store();
-    t.preset = PRESETS[o.base] ? o.base : DEFAULT_PRESET;
+    const base = RENAMED[o.base] ?? o.base;
+    t.preset = PRESETS[base] ? base : DEFAULT_PRESET;
     t.colors = colors;
+    t.style = style;
     save();
     applyTheme();
     return { ok: true, name: String(o.name || 'Imported theme') };
