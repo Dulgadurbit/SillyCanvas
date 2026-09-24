@@ -2,9 +2,9 @@
 
 A SillyTavern extension that lets you build your prompt as a graph instead of a list.
 
-Each block is a piece of the prompt: your own text, one of SillyTavern's prompts, the chat history, World Info. Wires connect the blocks, and the canvas turns them into the exact messages that get sent. You can read the whole prompt before anything goes out.
+Each block is a piece of the prompt: your own text, one of SillyTavern's prompts, the chat history, your lorebooks. Wires connect the blocks, and the canvas turns them into the exact messages that get sent. You can read the whole prompt before anything goes out.
 
-You can also put extra model calls in the middle of the graph. A Generate block can plan the scene, list what each character wants, or clean up a draft, and only its answer goes into the final prompt. A Decider block can send the prompt down different paths depending on what the chat or the text contains.
+You can also put extra model calls in the middle of the graph. A Generate block can plan the scene, list what each character wants, or clean up a draft, and only its answer goes into the final prompt. A Decider block works like a router: it switches blocks on or off depending on what the chat or the text contains, and several paths can fire at once. Each wire can carry exactly the part you want, such as the last user message or only the text inside a tag.
 
 When the canvas is switched off, SillyTavern builds the prompt exactly as it normally does.
 
@@ -34,9 +34,10 @@ Blocks are read from top to bottom. If you want something earlier in the prompt,
 | **Prompt** | Your own text, with a role (system, user or assistant). SillyTavern macros like `{{char}}` and `{{user}}` work. |
 | **SillyTavern** | One of your preset's prompts, read live from the preset. You can change it for one canvas without touching the preset. |
 | **History** | The chat, as separate turns or as one block of prose. You can limit it to the last few messages. |
-| **Injection** | World Info, Author's Note, summaries and vector memory. |
+| **Injection** | World Info, Author's Note, summaries and vector memory, as SillyTavern prepared them. |
+| **Lorebook** | Entries from your lorebooks, chosen by this block: as SillyTavern would, by keys in the text wired in, every entry, or only the ones you pick. See below. |
 | **Generate** | Asks a model something before the reply is written. What is wired into it is the question. Its answer goes on to the blocks below it, and its inputs do not. |
-| **Decider** | Picks one path. Each key has rules, the first key that matches wins, and a fallback catches the rest. Blocks on paths that were not picked are skipped and cost nothing. |
+| **Decider** | A router. Each output has its own rules; every output that matches fires (or only the first, or the AI picks, or by chance). Blocks on paths that were not taken are skipped and cost nothing. |
 | **Output** | The final prompt. Everything wired into it is sent. |
 | **Note** | For you. Never sent. |
 
@@ -54,7 +55,7 @@ Each wire also has a **mode**, set in the inspector or from the wire's right-cli
 
 - **Send** (solid, the default): the text travels along the wire.
 - **Activate** (dotted): nothing travels. A block with Activate wires only runs when at least one of them fires, and then uses its own content. From a Decider output, the wire fires when that output is chosen; from any other block, when that block is on. A Generate block that is not switched on is never called.
-- **Forward result** (dash-dot, from a Decider only): sends the decision as text: the chosen output's name, or the words that matched. Put `{{result}}` in the target block's text to place it; otherwise it is joined like any wired text.
+- **Forward result** (dash-dot, from a Decider or a Lorebook block): sends the result as text: a Decider's chosen outputs or the words that matched, or the names of the lorebook entries that fired. Put `{{result}}` in the target block's text to place it; otherwise it is joined like any wired text.
 
 ## Send what? (wire filters)
 
