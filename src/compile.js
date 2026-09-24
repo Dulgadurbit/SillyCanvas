@@ -22,10 +22,12 @@
  * no exceptions, because a graph you have to trace to predict is not a tool.
  */
 
-import { ctx, safe, NODE_TYPES, WIRE_KINDS, wiresInto, wiresOutOf, outputNode, togetherGroup, groupWires, deciderKeys, settings } from './state.js?v=0.11.0';
-import { stPrompt, MARKER_SOURCES } from './library.js?v=0.11.0';
-import { applySelect } from './select.js?v=0.11.0';
-import { toEntry, selectLore, loreMessages, blockBooks, stripFromWorldInfo } from './lore.js?v=0.11.0';
+import { ctx, safe, NODE_TYPES, WIRE_KINDS, wiresInto, wiresOutOf, outputNode, togetherGroup, groupWires, deciderKeys, settings } from './state.js?v=0.12.0';
+import { stPrompt, MARKER_SOURCES } from './library.js?v=0.12.0';
+import { applySelect } from './select.js?v=0.12.0';
+import { toEntry, selectLore, loreMessages, blockBooks, stripFromWorldInfo } from './lore.js?v=0.12.0';
+import { computeState, valueOutput, stageFor } from './statevals.js?v=0.12.0';
+import { holds } from './expr.js?v=0.12.0';
 
 /* ------------------------------------------------------------------ */
 /* live context                                                        */
@@ -143,7 +145,62 @@ async function loadLore(c, activated) {
  * lore is not sent twice. Cached per graph and context.
  */
 const loreViews = new WeakMap();
+const stateViews = new WeakMap();
+
+/**
+ * Every State block's values for this chat, and the names they go by in
+ * formulas and {{state::name}}. Worked out once per graph and context.
+ */
+function withStates(graph, live) {
+    const blocks = Object.values(graph.nodes).filter(n => n.type === NODE_TYPES.STATE);
+    if (!blocks.length || !live) return live;
+    let byGraph = stateViews.get(live);
+    if (!byGraph) { byGraph = new Map(); stateViews.set(live, byGraph); }
+    const key = JSON.stringify(blocks.map(b => [b.id, b.enabled, b.values]));
+    const hit = byGraph.get(graph.id);
+    if (hit?.key === key) return hit.view;
+    const states = {};
+    const vars = {};
+    const stages = {};
+    const texts = {};
+    const base = live.substitute ?? (t => t);
+    for (const b of blocks) {
+        if (b.enabled === false) continue;
+        const st = computeState(b, live.chat ?? []);
+        states[b.id] = st;
+        for (const v of b.values ?? []) {
+            if (!v.name) continue;
+            vars[v.name] = st.byId[v.id];
+            stages[v.name] = stageFor(v, st.byId[v.id])?.name ?? '';
+            texts[v.name] = v;
+        }
+    }
+    const turn = (live.chat ?? []).filter(m => !m.is_system && m.is_user).length;
+    const find = (table, name) => {
+        const k = Object.keys(table).find(x => x.toLowerCase() === String(name).trim().toLowerCase());
+        return k === undefined ? undefined : table[k];
+    };
+    // {{state::energy}} the number, {{stage::energy}} its stage name,
+    // {{statetext::energy}} its stage text. Replaced before SillyTavern's macros.
+    const substitute = (t) => base(String(t ?? '').replace(/\{\{(state|stage|statetext)::([^}]+)\}\}/gi, (all, kind, name) => {
+        const k = kind.toLowerCase();
+        if (k === 'state') { const v = find(vars, name); return v === undefined ? all : String(v); }
+        if (k === 'stage') { const v = find(stages, name); return v === undefined ? all : String(v); }
+        const def = find(texts, name);
+        return def ? valueOutput({ ...def, output: 'text' }, find(vars, name), base) : all;
+    }));
+    // A view that reads through to the real context, so what the runner
+    // changes on it later (AI answers, loop inputs) is still seen.
+    const view = Object.assign(Object.create(live), { states, stateVars: { ...vars, turn, messages: (live.chat ?? []).filter(m => !m.is_system).length }, substitute });
+    byGraph.set(graph.id, { key, view });
+    return view;
+}
+
 function liveFor(graph, live) {
+    return withStates(graph, loreFor(graph, live));
+}
+
+function loreFor(graph, live) {
     const blocks = Object.values(graph.nodes).filter(n => n.type === NODE_TYPES.LOREBOOK && n.excludeFromWI && n.enabled !== false);
     if (!blocks.length || !live?.worldInfo) return live;
     let byGraph = loreViews.get(live);
@@ -153,13 +210,12 @@ function liveFor(graph, live) {
     if (hit?.key === key) return hit.view;
     const entries = [...new Set(blocks.flatMap(b => blockBooks(b, live.lore)))].flatMap(name => live.lore?.books?.[name] ?? []);
     const sub = live.substitute ?? (t => t);
-    const view = {
-        ...live,
+    const view = Object.assign(Object.create(live), {
         worldInfo: {
             before: live.worldInfo.before === null ? null : stripFromWorldInfo(live.worldInfo.before, entries, sub),
             after: live.worldInfo.after === null ? null : stripFromWorldInfo(live.worldInfo.after, entries, sub),
         },
-    };
+    });
     byGraph.set(graph.id, { key, view });
     return view;
 }
@@ -343,6 +399,13 @@ export function evaluateRule(cond, live, extra = {}) {
             const q = String(cond.question ?? '').trim();
             if (!a) return { pass: false, why: `AI was not asked "${q}"`, needsAi: true };
             return { pass: a.yes, why: `AI answered ${a.yes ? 'YES' : 'NO'} to "${q.slice(0, 80)}"${a.unclear ? ' (its answer was unclear, so treated as NO)' : ''}` };
+        }
+        case 'expr': {
+            const f = String(cond.formula ?? '').trim();
+            if (!f) return { pass: true, why: 'no formula yet' };
+            const vars = { turn: (live.chat ?? []).filter(m => !m.is_system && m.is_user).length, messages: (live.chat ?? []).filter(m => !m.is_system).length, ...(live.stateVars ?? {}) };
+            const pass = holds(f, vars);
+            return { pass, why: `${f} is ${pass ? 'true' : 'false'}` };
         }
         case 'character': {
             const name = String(live.name2 ?? '');
@@ -798,7 +861,7 @@ export const wireMode = (w) => (w?.mode === 'activate' || w?.mode === 'result') 
  * @param {(node:object)=>{pass:boolean}} condOf  the block's own condition
  * @returns {(id:string)=>{on:boolean, why:string}}
  */
-export function activationGate(graph, choice, cut, condOf) {
+export function activationGate(graph, choice, cut, condOf, portOn = null, wireOk = null) {
     const memo = new Map();
     const busy = new Set();
     const gate = (id) => {
@@ -820,7 +883,12 @@ export function activationGate(graph, choice, cut, condOf) {
     const fires = (w) => {
         const src = graph.nodes[w.from];
         if (!src || src.enabled === false || cut.has(src.id)) return false;
-        if (src.type === NODE_TYPES.DECIDER) {
+        if (wireOk && !wireOk(w)) return false;
+        if (src.type === NODE_TYPES.STATE) {
+            // A State value switches a block on while it has something to say:
+            // its stage text (or number, or stage name) is not empty.
+            if (portOn && !portOn(src, w.port)) return false;
+        } else if (src.type === NODE_TYPES.DECIDER) {
             const k = choice[src.id];
             if (Array.isArray(k) && !k.includes(w.port)) return false;
         } else if (!condOf(src).pass) {
@@ -829,6 +897,28 @@ export function activationGate(graph, choice, cut, condOf) {
         return gate(src.id).on;
     };
     return gate;
+}
+
+/** What one State value sends along its output right now. Empty: nothing. */
+export function stateOutputFor(src, port, live) {
+    const v = (src?.values ?? []).find(x => x.id === port);
+    if (!v) return '';
+    const val = live?.states?.[src.id]?.byId?.[port];
+    if (val === undefined) return '';
+    return valueOutput(v, val, live.substitute ?? (t => t));
+}
+
+/**
+ * Whether a wire's own condition holds ("only if energy <= 1"). A wire with
+ * no condition always does. `incoming` is the text on the wire, for rules
+ * that look at it.
+ */
+export function wireHolds(wire, live, incoming) {
+    const c = wire?.condition;
+    if (!c || c.mode === 'always') return true;
+    const r = evaluateRule(c, live, { incoming: incoming ?? '' });
+    if (r.needsAi) return true;
+    return !!r.pass;
 }
 
 /** The text a "Forward result" wire carries from its Decider. */
@@ -933,7 +1023,12 @@ export function collect(graph, targetId, live, results = {}, decisions = {}, { r
         if (!conds.has(n.id)) conds.set(n.id, n.enabled === false ? { pass: false, why: 'switched off' } : evaluateCondition(n, live));
         return conds.get(n.id);
     };
-    const gate = activationGate(graph, choice, cut, condOf);
+    const portOn = (src, port) => !!stateOutputFor(src, port, live);
+    const wireOk = (w) => {
+        const src = graph.nodes[w.from];
+        return wireHolds(w, live, src?.type === NODE_TYPES.STATE ? stateOutputFor(src, w.port, live) : undefined);
+    };
+    const gate = activationGate(graph, choice, cut, condOf, portOn, wireOk);
 
     function contribute(nodeId, isTarget = false) {
         if (memo.has(nodeId)) {
@@ -1044,6 +1139,18 @@ export function collect(graph, targetId, live, results = {}, decisions = {}, { r
                 };
             }
         }
+        if (entry && node.type === NODE_TYPES.STATE && cond.pass) {
+            const st = live.states?.[nodeId];
+            const bits = (node.values ?? []).map(v => {
+                const val = st?.byId?.[v.id];
+                const stage = stageFor(v, val)?.name;
+                return `${v.name || 'value'} ${val ?? '?'}${stage ? ` (${stage})` : ''}`;
+            });
+            entry.status = 'in';
+            entry.why = bits.join(' \u00b7 ') || 'no values yet';
+            entry.decision = (node.values ?? []).filter(v => stateOutputFor(node, v.id, live)).map(v => v.id);
+            entry.state = st?.byId ?? {};
+        }
         const ownFirstTrace = node.type === NODE_TYPES.GENERATE && node.contentPosition === 'before';
         if (entry && ownFirstTrace) trace.push(entry);
 
@@ -1055,7 +1162,11 @@ export function collect(graph, targetId, live, results = {}, decisions = {}, { r
             // The wire's "Send what?" filter decides which part of the
             // upstream block actually crosses it.
             let up;
-            if (wireMode(wire) === 'result' && isResultSource(src)) {
+            if (src.type === NODE_TYPES.STATE) {
+                contribute(src.id);            // for its trace entry
+                const text = stateOutputFor(src, wire.port, live);
+                up = text ? [{ role: src.role || 'system', content: text, __y: src.y }] : [];
+            } else if (wireMode(wire) === 'result' && isResultSource(src)) {
                 contribute(src.id);            // for its trace entry; the result is sent instead of its text
                 if (hasMacro) continue;         // already placed into {{result}}
                 const text = resultFor(src, wire);
@@ -1064,6 +1175,8 @@ export function collect(graph, targetId, live, results = {}, decisions = {}, { r
                 up = applySelect(contribute(src.id), wire.select, live);
             }
             if (!up.length) continue;
+            // The wire's own condition, if it has one, with its text to look at.
+            if (wire.condition && !wireHolds(wire, live, textOf(up))) continue;
             switch (wire.kind) {
                 case WIRE_KINDS.APPEND: appendText.push(textOf(up)); break;
                 case WIRE_KINDS.PREPEND: prependText.push(textOf(up)); break;
@@ -1179,7 +1292,10 @@ export function wirePreview(graph, wire, live, results = {}) {
     const src = graph.nodes[wire?.from];
     if (!src) return [];
     let msgs;
-    if (src.type === NODE_TYPES.GENERATE) {
+    if (src.type === NODE_TYPES.STATE) {
+        const text = stateOutputFor(src, wire.port, liveFor(graph, live));
+        return text ? [{ role: src.role || 'system', content: text }] : [];
+    } else if (src.type === NODE_TYPES.GENERATE) {
         msgs = generateOutput(src, results, live);
     } else if (wireMode(wire) === 'result' && src.type === NODE_TYPES.LOREBOOK) {
         const fired = collect(graph, src.id, live, results).fired?.[src.id] ?? [];
@@ -1201,6 +1317,7 @@ export function wirePreview(graph, wire, live, results = {}) {
  */
 export function tryDecide(graph, dec, live, results = {}, decisions = {}) {
     if (decisions[dec.id]) return decisions[dec.id];
+    live = liveFor(graph, live);
     // Rules that only look at the chat, the time or variables do not need the
     // incoming text, so they can decide before anything upstream has run.
     let incoming = '';
@@ -1282,7 +1399,10 @@ export function liveNodes(graph, live, results = {}, decisions = {}) {
     const cut = cutNodes(graph, choice);
     // A probability roll is not known until the real walk, so assume it passes:
     // better to run a block that ends up unused than to miss one that is used.
-    const gate = activationGate(graph, choice, cut, (n) => n.condition?.mode === 'probability' ? { pass: true } : evaluateCondition(n, live));
+    const view = liveFor(graph, live);
+    const gate = activationGate(graph, choice, cut, (n) => n.condition?.mode === 'probability' ? { pass: true } : evaluateCondition(n, view),
+        (src, port) => !!stateOutputFor(src, port, view),
+        (w) => { const src = graph.nodes[w.from]; return wireHolds(w, view, src?.type === NODE_TYPES.STATE ? stateOutputFor(src, w.port, view) : undefined); });
     const stack = [out.id];
     // A block that only switches another on: follow its own Activate wires
     // up to any Decider, because that Decider still has to be able to choose.

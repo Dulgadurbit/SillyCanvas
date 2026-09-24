@@ -55,6 +55,12 @@ export const NODE_TYPES = {
      * to scan for keys, and stops there.
      */
     LOREBOOK: 'lorebook',
+    /**
+     * Values that change as the chat goes on (energy, hunger, a level...),
+     * with rules, and a stage table that turns each into words. Each value
+     * has its own output dot.
+     */
+    STATE: 'state',
 };
 
 /** A fresh output for a Decider, with one empty word rule to fill in. */
@@ -68,6 +74,32 @@ export function newDeciderKey(name = 'Output') {
         description: '',
     };
 }
+
+/** A fresh value for a State block. */
+export function newStateValue(name = 'energy') {
+    return {
+        id: uid('v'),
+        name,
+        kind: 'number',
+        start: 10,
+        min: 0,
+        max: 10,
+        output: 'text',
+        rules: [{ id: uid('r'), when: 'turn', op: 'sub', amount: '1' }],
+        stages: [],
+    };
+}
+
+/**
+ * A block's named output dots, if it has them: a Decider's outputs, a State
+ * block's values. Other blocks have one plain output.
+ */
+export function outPorts(node) {
+    if (node?.type === NODE_TYPES.DECIDER) return deciderKeys(node);
+    if (node?.type === NODE_TYPES.STATE) return (node.values ?? []).map(v => ({ id: v.id, name: v.name || 'value' }));
+    return [];
+}
+export const hasPorts = (node) => node?.type === NODE_TYPES.DECIDER || node?.type === NODE_TYPES.STATE;
 
 /** Every key of a Decider, fallback last. */
 export function deciderKeys(node) {
@@ -317,6 +349,14 @@ export function defaultNode(type, x, y) {
                 prefix: '',
                 suffix: '',
             };
+        case NODE_TYPES.STATE:
+            return {
+                ...base,
+                title: 'State',
+                w: 280,
+                role: 'system',
+                values: [],
+            };
         case NODE_TYPES.LOREBOOK:
             return {
                 ...base,
@@ -439,6 +479,42 @@ export function duplicateNode(graph, nodeId, { withInputs = false } = {}) {
     return copy;
 }
 
+/**
+ * Fold blocks into a group: one block on the canvas, with the wires that
+ * cross its edge showing on it. Only the drawing changes; the prompt is
+ * built exactly as before. Output never goes in a group.
+ * @returns {object|null} the group
+ */
+export function groupNodes(graph, ids, title = 'Group') {
+    const members = ids.map(id => graph.nodes[id]).filter(n => n && n.type !== NODE_TYPES.OUTPUT);
+    if (members.length < 2) return null;
+    graph.groups ??= {};
+    const g = {
+        id: uid('grp'),
+        title,
+        collapsed: true,
+        x: Math.min(...members.map(n => n.x)),
+        y: Math.min(...members.map(n => n.y)),
+        w: 260,
+    };
+    graph.groups[g.id] = g;
+    for (const n of members) n.group = g.id;
+    touchGraph(graph);
+    return g;
+}
+
+/** Undo a group: its blocks stay where they are, just no longer folded together. */
+export function ungroup(graph, groupId) {
+    for (const n of Object.values(graph.nodes)) if (n.group === groupId) delete n.group;
+    if (graph.groups) delete graph.groups[groupId];
+    touchGraph(graph);
+}
+
+/** The blocks in a group. */
+export function groupMembers(graph, groupId) {
+    return Object.values(graph.nodes).filter(n => n.group === groupId);
+}
+
 export function removeNode(graph, nodeId) {
     const node = graph.nodes[nodeId];
     if (!node || node.type === NODE_TYPES.OUTPUT) return false;
@@ -473,9 +549,11 @@ export function connect(graph, fromId, toId, kind = WIRE_KINDS.APPEND, { port = 
         return { ok: false, reason: 'Notes are for you, not for the model.' };
     }
     const src = graph.nodes[fromId];
-    if (src.type === NODE_TYPES.DECIDER) {
-        const key = deciderKeys(src).find(k => k.id === port);
-        if (!key) return { ok: false, reason: 'Drag from one of the Decider\u2019s outputs, so it knows which path this is.' };
+    if (hasPorts(src)) {
+        const key = outPorts(src).find(k => k.id === port);
+        if (!key) return { ok: false, reason: src.type === NODE_TYPES.STATE
+            ? 'Drag from one of the State block\u2019s values, so it knows which one to send.'
+            : 'Drag from one of the Decider\u2019s outputs, so it knows which path this is.' };
     } else {
         port = null;
     }

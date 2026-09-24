@@ -38,6 +38,7 @@ Blocks are read from top to bottom. If you want something earlier in the prompt,
 | **Lorebook** | Entries from your lorebooks, chosen by this block: as SillyTavern would, by keys in the text wired in, every entry, or only the ones you pick. See below. |
 | **Generate** | Asks a model something before the reply is written. What is wired into it is the question. Its answer goes on to the blocks below it, and its inputs do not. |
 | **Decider** | A router. Each output has its own rules; every output that matches fires (or only the first, or the AI picks, or by chance). Blocks on paths that were not taken are skipped and cost nothing. |
+| **State** | Values that change as the chat goes on (energy, hunger, a level, a mood), with rules and a stage table that turns each into words. See below. |
 | **Output** | The final prompt. Everything wired into it is sent. |
 | **Note** | For you. Never sent. |
 
@@ -66,6 +67,26 @@ Click a wire to choose exactly what travels along it. The same block can feed di
 - **Arrives as:** separate messages, or one piece of text, optionally with the speaker's name in front of each part.
 
 The wire's label shows the filter (`last 5 · user`), and **Show what it carries now** previews the result for the open chat, with a token count.
+
+## State blocks
+
+A **State** block keeps values that change as the chat goes on, and turns them into words. One block can hold many values, and each value has its own output dot.
+
+- **Rules** change a value: every turn, every few turns, when words appear (in your messages, the character's, or either; "didn't eat" does not count as eating), or when a formula holds. They add, subtract, set, multiply or reset, by a number or a formula.
+- **A stage table** turns a number into text. For example, Energy 10 to 7 sends nothing, 6 to 5 sends *"{{char}} is getting tired."*, 4 to 1 *"exhausted"*, 0 *"falls asleep"*. **Split into 5 stages** makes the rows for you.
+- **Its output** sends the stage text, the number, or the stage name. When there is nothing to send, its wires carry nothing, and an Activate wire from it does not switch its block on.
+- **Anywhere in your text:** `{{state::energy}}` (the number), `{{stage::energy}}` (the stage name), `{{statetext::energy}}` (the stage text).
+- **Formulas** in Decider rules and wire conditions read the values by name: `energy <= 2 and turn > 5`. They can use `+ - * / %`, comparisons, `and or not`, `min max abs round clamp`, and `a ? b : c`.
+
+The values are worked out again from the chat every time, so swiping, regenerating or deleting a message never counts a turn twice. **Set now** changes a value by hand; it is kept on the latest message, so it goes if that message goes.
+
+## Conditions on wires
+
+Any wire can carry a condition: right-click it and choose **Add a condition**, or use **Only when** in its settings. The wire then lets its text through only while the condition holds, for example only when `energy <= 1`, only when its text mentions a sword, or only after turn 10. On an Activate wire, the block it points at stays off while the condition fails. The condition shows on the wire's label.
+
+## Groups
+
+Shift-click blocks, or Shift-drag a box on empty canvas, then choose **Group** (right-click, or the button in the side panel). The group folds into one block that shows what comes in and what goes out. Double-click it to open it; a frame shows its blocks, and double-clicking the frame's title folds it again. Drag a group to move all its blocks. Grouping only changes how the canvas looks: the prompt is built exactly the same. Deleting a group only ungroups it; the blocks stay.
 
 ## Lorebook blocks
 

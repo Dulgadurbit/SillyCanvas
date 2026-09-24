@@ -908,8 +908,8 @@
 /* ---- Decider redo ---- */
 .pc-dec-mode { font-size: 0.78em; opacity: 0.7; padding: 2px 10px 4px; font-style: italic; }
 .pc-dec-unset { opacity: 1; font-style: normal; font-weight: 600; color: var(--pc-warn); }
-.pc-help { cursor: pointer; opacity: 0.55; margin-left: auto; margin-right: 6px; font-size: 0.95em; }
-.pc-help:hover { opacity: 1; }
+.pc-help-btn { cursor: pointer; opacity: 0.55; margin-left: auto; margin-right: 6px; font-size: 0.95em; }
+.pc-help-btn:hover { opacity: 1; }
 .pc-guide { margin: 4px 0 10px; border: 1px solid color-mix(in srgb, var(--pc-text) 18%, transparent); border-radius: var(--pc-r); padding: 6px 10px; }
 .pc-guide > summary { cursor: pointer; font-weight: 700; }
 .pc-guide-body { font-size: 0.85em; line-height: 1.4; }
@@ -1066,3 +1066,36 @@
 .pc-th-look-grid { display: grid; grid-template-columns: 1fr; gap: 4px; margin: 6px 0; }
 .pc-th-look-row { display: grid; grid-template-columns: 110px 1fr; align-items: center; gap: 8px; font-size: 0.88em; }
 .pc-th-look-select { margin: 0 !important; }
+
+/* ---- State block ---- */
+.pc-node-state { --pc-type: var(--pc-warn); }
+.pc-state-now { font-size: 1.05em; }
+.pc-state-rule { display: flex; flex-direction: column; gap: 4px; }
+.pc-state-stage { border-left: 3px solid color-mix(in srgb, var(--pc-text) 15%, transparent); padding: 4px 0 4px 8px; margin: 6px 0; display: flex; flex-direction: column; gap: 4px; }
+.pc-state-stage-on { border-left-color: var(--pc-warn); background: color-mix(in srgb, var(--pc-warn) 8%, transparent); }
+.pc-state-card .pc-select-row > .text_pole:not(.pc-select-num) { flex: 1 1 90px; min-width: 70px; }
+.pc-wire.pc-wire-conditional { stroke-linecap: round; }
+.pc-cond-box { margin: 10px 0; padding: 8px 10px; border: 1px dashed color-mix(in srgb, var(--pc-text) 22%, transparent); border-radius: var(--pc-r); }
+
+/* ---- groups and picking several blocks ---- */
+.pc-node-group { --pc-type: var(--pc-muted); border-style: double; border-width: calc(var(--pc-bw) + 2px); cursor: grab; }
+.pc-node-group .pc-node-body { opacity: 0.8; }
+.pc-group-io { white-space: normal; }
+.pc-gport { position: absolute; left: 50%; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: var(--pc-muted); border: 2px solid var(--pc-panel-solid); pointer-events: none; }
+.pc-gport-in { top: -8px; }
+.pc-gport-out { bottom: -8px; background: var(--pc-flow); }
+.pc-group-frame {
+    position: absolute; pointer-events: none;
+    border: calc(var(--pc-bw) + 1px) dashed color-mix(in srgb, var(--pc-text) 30%, transparent);
+    border-radius: calc(var(--pc-r) + 6px);
+    background: color-mix(in srgb, var(--pc-text) 3%, transparent);
+}
+.pc-group-frame.pc-selected { border-color: var(--pc-flow); }
+.pc-group-frame-head {
+    pointer-events: auto; cursor: grab; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 6px 12px; font-weight: 600; font-size: 0.9em; opacity: 0.85;
+}
+.pc-group-fold { cursor: pointer; opacity: 0.7; }
+.pc-group-fold:hover { opacity: 1; color: var(--pc-flow); }
+.pc-marquee { position: absolute; pointer-events: none; border: 1px dashed var(--pc-flow); background: color-mix(in srgb, var(--pc-flow) 10%, transparent); z-index: 5; }
+:root .pc-node.pc-multi { box-shadow: 0 0 0 2px var(--pc-flow); outline: 2px dashed color-mix(in srgb, var(--pc-flow) 60%, transparent); outline-offset: 3px; }

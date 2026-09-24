@@ -22,13 +22,14 @@ const stacks = new Map();
 const pending = new Map();      // graph id -> timer
 const listeners = new Set();
 
-const snapshot = (g) => JSON.stringify({ name: g.name, description: g.description ?? '', nodes: g.nodes, wires: g.wires });
+const snapshot = (g) => JSON.stringify({ name: g.name, description: g.description ?? '', nodes: g.nodes, wires: g.wires, groups: g.groups ?? {} });
 
 /** The shape of a canvas: which blocks and wires exist, where, and on or off. */
 function signature(g) {
-    const nodes = Object.values(g.nodes ?? {}).map(n => `${n.id}:${Math.round(n.x)}:${Math.round(n.y)}:${n.enabled !== false}`).sort();
+    const nodes = Object.values(g.nodes ?? {}).map(n => `${n.id}:${Math.round(n.x)}:${Math.round(n.y)}:${n.enabled !== false}:${n.group ?? ''}`).sort();
     const wires = Object.values(g.wires ?? {}).map(w => `${w.id}:${w.kind}:${w.port ?? ''}`).sort();
-    return `${nodes.join(',')}|${wires.join(',')}`;
+    const groups = Object.values(g.groups ?? {}).map(x => `${x.id}:${x.collapsed ? 1 : 0}:${Math.round(x.x ?? 0)}:${Math.round(x.y ?? 0)}`).sort();
+    return `${nodes.join(',')}|${wires.join(',')}|${groups.join(',')}`;
 }
 
 function stack(g) {
@@ -87,6 +88,7 @@ function restore(g, state) {
     const o = JSON.parse(state);
     g.nodes = o.nodes;
     g.wires = o.wires;
+    g.groups = o.groups ?? {};
     g.name = o.name;
     g.description = o.description;
     const s = stack(g);

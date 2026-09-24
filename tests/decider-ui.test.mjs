@@ -19,7 +19,7 @@ const { defaultNode, connect, NODE_TYPES, newDeciderKey } = await import(`../src
     cv0.setGraph({ nodes: { fresh }, wires: {}, view: { x: 0, y: 0, zoom: 1 } });
     cv0.render();
     assert.match(document.querySelector('.pc-node[data-id="fresh"]').textContent, /Not set up yet/);
-    assert.ok(document.querySelector('.pc-node[data-id="fresh"] .pc-help'), '? button');
+    assert.ok(document.querySelector('.pc-node[data-id="fresh"] .pc-help-btn'), '? button');
     document.getElementById('host').innerHTML = '';
 }
 

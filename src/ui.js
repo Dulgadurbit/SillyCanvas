@@ -13,17 +13,19 @@ import {
     addNode, removeNode, outputNode, connect, disconnect, resolveGraph,
     chatBinding, setChatBinding, characterBinding, setCharacterBinding,
     exportGraph, importGraph, blankGraph, isFolderCollapsed, setFolderCollapsed, togetherGroup,
-    newDeciderKey, removeDeciderKey, onGraphTouched, duplicateNode,
-} from './state.js?v=0.11.0';
-import { applyTheme } from './theme.js?v=0.11.0';
-import { renderThemeEditor } from './theme-editor.js?v=0.11.0';
-import * as H from './history.js?v=0.11.0';
-import * as L from './library.js?v=0.11.0';
-import { compile, gatherContext, resolveNode, textOf, generateLevels, emissionCounts, wirePreview, countTokens, routingMode, explainDecider, deciderInputList, collect } from './compile.js?v=0.11.0';
-import { LORE_POSITIONS } from './lore.js?v=0.11.0';
-import { DEFAULT_SELECT, isActive as selectActive, selectLabel } from './select.js?v=0.11.0';
-import { run, profileName, effectiveModel, callCount, testBlock, shapeForApi, inspectProfile, modelsForSource, sourceForBlock, cachedModels, fetchModelList, previewBlock } from './run.js?v=0.11.0';
-import { Canvas, WIRE_LABEL, TYPE_LABEL } from './canvas.js?v=0.11.0';
+    newDeciderKey, removeDeciderKey, onGraphTouched, duplicateNode, newStateValue, groupNodes, ungroup, groupMembers,
+} from './state.js?v=0.12.0';
+import { applyTheme } from './theme.js?v=0.12.0';
+import { renderThemeEditor } from './theme-editor.js?v=0.12.0';
+import * as H from './history.js?v=0.12.0';
+import * as L from './library.js?v=0.12.0';
+import { compile, gatherContext, resolveNode, textOf, generateLevels, emissionCounts, wirePreview, countTokens, routingMode, explainDecider, deciderInputList, collect } from './compile.js?v=0.12.0';
+import { LORE_POSITIONS } from './lore.js?v=0.12.0';
+import { computeState, stageFor, NUDGE_KEY } from './statevals.js?v=0.12.0';
+import { check as checkFormula } from './expr.js?v=0.12.0';
+import { DEFAULT_SELECT, isActive as selectActive, selectLabel } from './select.js?v=0.12.0';
+import { run, profileName, effectiveModel, callCount, testBlock, shapeForApi, inspectProfile, modelsForSource, sourceForBlock, cachedModels, fetchModelList, previewBlock } from './run.js?v=0.12.0';
+import { Canvas, WIRE_LABEL, TYPE_LABEL } from './canvas.js?v=0.12.0';
 
 let root = null;
 let canvas = null;
@@ -254,6 +256,10 @@ function build() {
 
     canvas = new Canvas(canvasHost, {
         onSelect: (item, kind) => { selected = item; selectedKind = kind; renderInspector(); },
+        onMulti: (ids) => {
+            if (ids.length > 1) { selected = ids; selectedKind = 'multi'; renderInspector(); }
+            else if (selectedKind === 'multi') { selected = null; selectedKind = null; renderInspector(); }
+        },
         onChange: () => { renderStatus(); refreshPreview(); },
         onOpen: (node) => {
             selected = node; selectedKind = 'node';
@@ -384,6 +390,8 @@ function afterHistory(label, verb) {
     save();
     if (selectedKind === 'node' && selected) selected = current.nodes[selected.id] ?? null;
     if (selectedKind === 'wire' && selected) selected = current.wires[selected.id] ?? null;
+    if (selectedKind === 'group' && selected) selected = current.groups?.[selected.id] ?? null;
+    if (selectedKind === 'multi') { selected = null; selectedKind = null; }
     if (!selected) selectedKind = null;
     canvas.select(selected ? { kind: selectedKind, id: selected.id } : null);
     renderAll();
@@ -527,6 +535,7 @@ function renderSidebar() {
         [NODE_TYPES.HISTORY, 'fa-clock-rotate-left', 'History'],
         [NODE_TYPES.INJECTION, 'fa-syringe', 'Injection'],
         [NODE_TYPES.LOREBOOK, 'fa-book-atlas', 'Lorebook'],
+        [NODE_TYPES.STATE, 'fa-gauge-high', 'State'],
         [NODE_TYPES.NOTE, 'fa-note-sticky', 'Note'],
     ]) {
         const b = el('div', 'pc-block-chip');
@@ -819,7 +828,63 @@ function renderInspector() {
 
     if (selectedKind === 'wire') return renderWireInspector(box);
     if (selectedKind === 'library') return renderLibraryInspector(box);
+    if (selectedKind === 'group') return renderGroupInspector(box);
+    if (selectedKind === 'multi') return renderMultiInspector(box);
     return renderNodeInspector(box);
+}
+
+/** Several blocks picked at once: group them, or delete them. */
+function renderMultiInspector(box) {
+    const ids = (Array.isArray(selected) ? selected : []).filter(id => current.nodes[id]);
+    box.append(el('div', 'pc-insp-title', `${ids.length} blocks`));
+    box.append(el('div', 'pc-hint', ids.map(id => current.nodes[id].title || 'Untitled').join(' \u00b7 ')));
+    const name = el('input', 'text_pole');
+    name.placeholder = 'e.g. Needs';
+    name.value = 'Group';
+    box.append(field('Group name', name));
+    const g = el('div', 'pc-btn menu_button');
+    g.innerHTML = '<i class="fa-solid fa-object-group"></i> Group them into one block';
+    g.addEventListener('click', () => makeGroup(ids, name.value.trim() || 'Group'));
+    box.append(g);
+    box.append(el('div', 'pc-hint', 'The group shows as one block, with what comes in and goes out. Double-click it to open it; the prompt is built exactly the same either way. Output cannot go in a group.'));
+    const del = el('div', 'pc-btn menu_button pc-danger');
+    del.innerHTML = `<i class="fa-solid fa-trash-can"></i> Delete these ${ids.length} blocks`;
+    del.addEventListener('click', () => { canvas.deleteSelection(); selected = null; selectedKind = null; renderAll(); });
+    box.append(del);
+    box.append(el('div', 'pc-hint', 'Shift-click a block to add or remove it. Shift-drag on empty canvas to pick everything in a box.'));
+}
+
+function makeGroup(ids, title) {
+    const g = groupNodes(current, ids, title);
+    if (!g) { toast('Pick at least two blocks (Output cannot go in a group).', 'warning'); return; }
+    canvas.setMulti([]);
+    canvas.select({ kind: 'group', id: g.id });
+    renderStatus();
+}
+
+/** A group: its name, its blocks, open or fold it, or take it apart. */
+function renderGroupInspector(box) {
+    const g = selected;
+    box.append(el('div', 'pc-insp-title', 'Group'));
+    const name = el('input', 'text_pole');
+    name.value = g.title ?? '';
+    name.addEventListener('input', () => { g.title = name.value; touch(); canvas.render(); });
+    box.append(field('Name', name));
+    const members = groupMembers(current, g.id).sort((a, b) => (a.y - b.y) || (a.x - b.x));
+    const list = el('div', 'pc-dest-chips');
+    for (const n of members) list.append(el('span', 'pc-dest-chip', n.title || 'Untitled'));
+    box.append(field(`${members.length} blocks`, list));
+    const toggle = el('div', 'pc-btn menu_button');
+    toggle.innerHTML = g.collapsed ? '<i class="fa-solid fa-up-right-and-down-left-from-center"></i> Open it' : '<i class="fa-solid fa-down-left-and-up-right-to-center"></i> Fold it into one block';
+    toggle.addEventListener('click', () => { canvas.setCollapsed(g.id, !g.collapsed); renderInspector(); });
+    const apart = el('div', 'pc-btn menu_button');
+    apart.innerHTML = '<i class="fa-solid fa-object-ungroup"></i> Ungroup';
+    apart.title = 'The blocks stay where they are';
+    apart.addEventListener('click', () => { ungroup(current, g.id); selected = null; selectedKind = null; canvas.render(); renderInspector(); });
+    const row = el('div', 'pc-row pc-insp-actions');
+    row.append(toggle, apart);
+    box.append(row);
+    box.append(el('div', 'pc-hint', 'Grouping only changes how the canvas looks. The prompt is built exactly the same. Double-click the group to open or fold it.'));
 }
 
 /** Edit a saved prompt where it lives, without putting it on the canvas. */
@@ -932,6 +997,8 @@ function renderWireInspector(box) {
 
     if (mode === 'send') renderSelectFields(box, wire);
 
+    renderWireCondition(box, wire);
+
     // Two Generate blocks can be tied instead of wired: that drops the text
     // flow between them and simply sends them at the same time.
     if (from?.type === NODE_TYPES.GENERATE && to?.type === NODE_TYPES.GENERATE) {
@@ -985,6 +1052,7 @@ function renderNodeInspector(box) {
     else if (node.type === NODE_TYPES.HISTORY) renderHistoryFields(box, node);
     else if (node.type === NODE_TYPES.INJECTION) renderInjectionFields(box, node);
     else if (node.type === NODE_TYPES.LOREBOOK) renderLoreFields(box, node);
+    else if (node.type === NODE_TYPES.STATE) renderStateFields(box, node);
     else if (node.type === NODE_TYPES.GENERATE) renderGenerateFields(box, node);
     else if (node.type === NODE_TYPES.DECIDER) renderDeciderFields(box, node);
     else if (node.type === NODE_TYPES.NOTE) {
@@ -997,7 +1065,7 @@ function renderNodeInspector(box) {
         box.append(el('div', 'pc-hint', 'Everything wired into this block is sent, in the order the blocks sit on the canvas.'));
     }
 
-    if (node.type !== NODE_TYPES.NOTE && node.type !== NODE_TYPES.DECIDER) {
+    if (node.type !== NODE_TYPES.NOTE && node.type !== NODE_TYPES.DECIDER && node.type !== NODE_TYPES.STATE) {
         box.append(el('hr', 'pc-rule'));
         renderConditionEditor(box, node);
         renderModelEditor(box, node);
@@ -1464,6 +1532,43 @@ function renderSelectFields(box, wire) {
     wrap.append(btns, out);
 }
 
+const WIRE_RULE_MODES = [
+    ['always', 'Always (no condition)'],
+    ['expr', 'Formula (State values, turn\u2026)'],
+    ['search', 'Contains words or phrases'],
+    ['lacks', 'Does not contain words or phrases'],
+    ['chat', 'Chat length / last speaker'],
+    ['time', 'Time of day'],
+    ['variable', 'Variable'],
+    ['probability', 'Probability'],
+    ['character', 'Character name'],
+    ['model', 'Model name'],
+];
+
+/** "Only when": a condition on the wire itself. Everything passes until you add one. */
+function renderWireCondition(box, wire) {
+    const wrap = el('div', 'pc-cond-box pc-wire-cond');
+    const head = el('div', 'pc-select-head');
+    head.append(el('span', 'pc-select-title', 'Only when'));
+    wrap.append(head);
+    const c = wire.condition ?? { mode: 'always' };
+    if (!wire.condition) {
+        wrap.append(el('div', 'pc-hint', 'This wire always carries what it carries. Add a condition to let it through only sometimes \u2014 for example only when energy <= 2, or only when its text mentions a sword. On an Activate wire, the block it points at stays off while the condition fails.'));
+        const add = el('div', 'pc-btn menu_button');
+        add.innerHTML = '<i class="fa-solid fa-filter"></i> Add a condition';
+        add.addEventListener('click', () => { wire.condition = { mode: 'expr', formula: '' }; touch(); canvas.render(); renderInspector(); });
+        wrap.append(add);
+    } else {
+        renderRuleFields(wrap, c, { label: 'Let it through when', modes: WIRE_RULE_MODES, scopes: [['incoming', 'the text on this wire'], ...SEARCH_SCOPES] });
+        const rm = el('div', 'pc-btn menu_button');
+        rm.innerHTML = '<i class="fa-solid fa-filter-circle-xmark"></i> Remove the condition';
+        rm.addEventListener('click', () => { delete wire.condition; touch(); canvas.render(); renderInspector(); });
+        wrap.append(rm);
+        if (c.mode === 'always') { delete wire.condition; }
+    }
+    box.append(wrap);
+}
+
 /** A wire that sends a result back up the canvas. */
 function renderLoopInspector(box, wire, from, to) {
     const key = from?.type === NODE_TYPES.DECIDER
@@ -1787,6 +1892,7 @@ function renderConditionEditor(box, node) {
 
 const BLOCK_RULE_MODES = [
     ['always', 'Always'],
+    ['expr', 'Formula (State values, turn\u2026)'],
     ['probability', 'Probability'],
     ['search', 'Term search'],
     ['variable', 'Variable'],
@@ -1797,6 +1903,7 @@ const BLOCK_RULE_MODES = [
 ];
 const KEY_RULE_MODES = [
     ['search', 'Contains words or phrases'],
+    ['expr', 'Formula (State values, turn\u2026)'],
     ['lacks', 'Does not contain words or phrases'],
     ['number', 'Number comparison (math)'],
     ['ai', 'Ask the AI a yes/no question'],
@@ -1978,6 +2085,15 @@ function renderRuleFields(box, c, { label = 'Rule', modes = BLOCK_RULE_MODES, sc
         box.append(field('Value', text(c.value, v => { c.value = v; soft(); })));
     }
 
+    if (c.mode === 'expr') {
+        const f = el('input', 'text_pole');
+        f.placeholder = 'e.g. energy <= 2 and turn > 5';
+        f.value = c.formula ?? '';
+        const note = el('div', 'pc-hint', formulaNote(c.formula, null));
+        f.addEventListener('input', () => { c.formula = f.value; note.textContent = formulaNote(c.formula, null); soft(); });
+        box.append(field('Holds when', f), note);
+    }
+
     if (c.mode === 'model') {
         box.append(field('Model name contains', text(c.value, v => { c.value = v; soft(); }, 'claude, gpt-4, gemini…')));
     }
@@ -1985,6 +2101,208 @@ function renderRuleFields(box, c, { label = 'Rule', modes = BLOCK_RULE_MODES, sc
     if (c.mode === 'character') {
         box.append(field('Character name contains', text(c.value, v => { c.value = v; soft(); }, 'Kenzy')));
     }
+}
+
+/* ------------------------------------------------------------------ */
+/* State                                                               */
+/* ------------------------------------------------------------------ */
+
+const STATE_WHEN = [
+    ['turn', 'every turn'],
+    ['every', 'every few turns'],
+    ['phrase', 'when words appear'],
+    ['formula', 'when a formula holds'],
+];
+const STATE_OPS = [['add', 'add'], ['sub', 'subtract'], ['set', 'set to'], ['mul', 'multiply by'], ['reset', 'reset to start']];
+
+/** Set a value by hand, from now on. Saved on the latest message, so it goes if that message goes. */
+async function nudgeState(node, v, value) {
+    const c = ctx();
+    const chat = c.chat ?? [];
+    let i = chat.length - 1;
+    while (i >= 0 && chat[i]?.is_system) i--;
+    if (i < 0) { toast('Start the chat first: a value set by hand is kept on the latest message.', 'warning'); return; }
+    const m = chat[i];
+    m.extra ??= {};
+    m.extra[NUDGE_KEY] ??= {};
+    m.extra[NUDGE_KEY][node.id] ??= {};
+    m.extra[NUDGE_KEY][node.id][v.id] = v.kind === 'text' ? String(value) : Number(value);
+    await safe(() => c.saveChat());
+}
+
+function renderStateFields(box, node) {
+    const redraw = () => { touch(); canvas.render(); renderInspector(); };
+    const soft = () => { touch(); canvas.render(); };
+    node.values ??= [];
+    const now = liveCache ? computeState(node, liveCache.chat ?? []) : null;
+    const input = (value, ph, onInput, cls = 'text_pole') => {
+        const i = el('input', cls);
+        i.value = value ?? '';
+        i.placeholder = ph;
+        i.addEventListener('input', () => onInput(i.value));
+        return i;
+    };
+    const numIn = (value, ph, onInput) => {
+        const i = input(value, ph, onInput, 'text_pole pc-select-num');
+        i.type = 'number';
+        return i;
+    };
+    const row = (...kids) => { const r = el('div', 'pc-select-row'); r.append(...kids); return r; };
+    const link = (text, fn) => { const a = el('a', 'pc-key-add', text); a.href = 'javascript:void(0)'; a.addEventListener('click', fn); return a; };
+
+    box.append(el('div', 'pc-hint', 'Values that change as the chat goes on. Rules change them; a stage table turns each into words. Each value has its own output dot. They are worked out from the chat each time, so swipes and deleted messages never count twice.'));
+
+    node.values.forEach((v, i) => {
+        const card = el('div', 'pc-key-card pc-state-card');
+        const head = el('div', 'pc-key-head');
+        const name = input(v.name, 'name, e.g. energy', (x) => { v.name = x.trim().replace(/\s+/g, '_'); soft(); }, 'text_pole pc-key-name');
+        head.append(name,
+            mkBtn('fa-arrow-up', 'Move up', () => { if (i) { [node.values[i - 1], node.values[i]] = [node.values[i], node.values[i - 1]]; redraw(); } }, 'pc-key-tool'),
+            mkBtn('fa-clone', 'Duplicate this value (without its wires)', () => {
+                const copy = structuredClone(v);
+                copy.id = newStateValue().id;
+                copy.name = `${v.name || 'value'}_2`;
+                node.values.splice(i + 1, 0, copy);
+                redraw();
+            }, 'pc-key-tool'),
+            mkBtn('fa-trash-can', 'Remove this value and its wires', () => {
+                node.values.splice(i, 1);
+                for (const [wid, w] of Object.entries(current.wires)) if (w.from === node.id && w.port === v.id) delete current.wires[wid];
+                redraw();
+            }, 'pc-key-tool'),
+        );
+        card.append(head);
+
+        // what it is
+        card.append(field('Kind', dropdown([['number', 'A number'], ['text', 'A word or text']], v.kind ?? 'number', (x) => { v.kind = x; redraw(); })));
+        if (v.kind === 'text') {
+            card.append(field('Starts as', input(v.start, 'e.g. calm', (x) => { v.start = x; soft(); })));
+        } else {
+            card.append(field('Starts at, and stays between', row(
+                numIn(v.start, 'start', (x) => { v.start = x === '' ? 0 : Number(x); soft(); }),
+                el('span', 'pc-hint', 'from'), numIn(v.min, 'no min', (x) => { v.min = x === '' ? '' : Number(x); soft(); }),
+                el('span', 'pc-hint', 'to'), numIn(v.max, 'no max', (x) => { v.max = x === '' ? '' : Number(x); soft(); }),
+            )));
+        }
+
+        // right now
+        if (now) {
+            const val = now.byId[v.id];
+            const stage = stageFor(v, val);
+            const setBox = input('', v.kind === 'text' ? 'new text' : 'new value', () => {}, v.kind === 'text' ? 'text_pole' : 'text_pole pc-select-num');
+            if (v.kind !== 'text') setBox.type = 'number';
+            const setBtn = el('div', 'pc-btn menu_button', 'Set now');
+            setBtn.title = 'Change it by hand from here on. Kept on the latest message.';
+            setBtn.addEventListener('click', async () => {
+                if (setBox.value === '') return;
+                await nudgeState(node, v, setBox.value);
+                await refreshLive();
+                redraw();
+            });
+            card.append(field('Right now', row(el('b', 'pc-state-now', `${val}${stage?.name ? ` · ${stage.name}` : ''}`), el('span', 'pc-hint', `turn ${now.turn}`), setBox, setBtn)));
+        }
+
+        // rules
+        card.append(el('div', 'pc-select-sub', 'Rules'));
+        v.rules ??= [];
+        v.rules.forEach((r, ri) => {
+            const ruleBox = el('div', 'pc-key-rule pc-state-rule');
+            const when = dropdown(STATE_WHEN, r.when ?? 'turn', (x) => { r.when = x; redraw(); });
+            const whenRow = row(el('span', 'pc-hint', 'When'), when);
+            if (r.when === 'every') whenRow.append(el('span', 'pc-hint', 'every'), numIn(r.n ?? 2, '2', (x) => { r.n = Math.max(1, Number(x) || 1); soft(); }), el('span', 'pc-hint', 'turns'));
+            ruleBox.append(whenRow);
+            if (r.when === 'phrase') {
+                const terms = el('textarea', 'text_pole pc-textarea');
+                terms.rows = 2;
+                terms.placeholder = 'sleeps, naps, goes to bed';
+                terms.value = r.terms ?? '';
+                terms.addEventListener('input', () => { r.terms = terms.value; soft(); });
+                ruleBox.append(terms);
+                ruleBox.append(row(el('span', 'pc-hint', 'in'), dropdown([['any', 'any message'], ['char', 'the character’s replies'], ['user', 'your messages']], r.who ?? 'any', (x) => { r.who = x; soft(); })));
+                ruleBox.append(checkline('Ignore it after "didn’t", "refuses", "never"…', r.negation !== false, (x) => { r.negation = x; soft(); }));
+            }
+            if (r.when === 'formula') {
+                const f = input(r.formula, 'e.g. hunger >= 8 and turn % 2 == 0', (x) => { r.formula = x; soft(); showCheck(); });
+                const msg = el('div', 'pc-hint');
+                const showCheck = () => { msg.textContent = formulaNote(r.formula, node); };
+                showCheck();
+                ruleBox.append(f, msg);
+            }
+            const doRow = row(el('span', 'pc-hint', 'Do'), dropdown(STATE_OPS, r.op ?? 'add', (x) => { r.op = x; redraw(); }));
+            if (r.op !== 'reset') doRow.append(input(r.amount, v.kind === 'text' ? 'text, or a formula' : '1, or a formula', (x) => { r.amount = x; soft(); }));
+            ruleBox.append(doRow);
+            ruleBox.append(link('remove this rule', () => { v.rules.splice(ri, 1); redraw(); }));
+            card.append(ruleBox);
+        });
+        card.append(link('+ add a rule', () => { v.rules.push({ id: `r${Date.now().toString(36)}${ri2()}`, when: 'turn', op: 'add', amount: '1' }); redraw(); }));
+
+        // stages
+        if (v.kind !== 'text') {
+            card.append(el('div', 'pc-select-sub', 'Stages'));
+            v.stages ??= [];
+            const table = el('div', 'pc-state-stages');
+            v.stages.forEach((s, si) => {
+                const r = el('div', 'pc-state-stage');
+                r.append(
+                    row(numIn(s.from, 'from', (x) => { s.from = x === '' ? '' : Number(x); soft(); }), el('span', 'pc-hint', 'to'),
+                        numIn(s.to, 'to', (x) => { s.to = x === '' ? '' : Number(x); soft(); }),
+                        input(s.name, 'stage name, e.g. tired', (x) => { s.name = x; soft(); }),
+                        mkBtn('fa-xmark', 'Remove this stage', () => { v.stages.splice(si, 1); redraw(); }, 'pc-key-tool')),
+                );
+                const t = el('textarea', 'text_pole pc-textarea');
+                t.rows = 2;
+                t.placeholder = 'What is sent at this stage, e.g. {{char}} is getting tired. Leave empty to send nothing.';
+                t.value = s.text ?? '';
+                t.addEventListener('input', () => { s.text = t.value; soft(); });
+                r.append(t);
+                if (now && stageFor(v, now.byId[v.id]) === s) r.classList.add('pc-state-stage-on');
+                table.append(r);
+            });
+            card.append(table);
+            const addStage = link('+ add a stage', () => { v.stages.push({ from: '', to: '', name: '', text: '' }); redraw(); });
+            const split = link(`split ${v.min ?? 0}–${v.max ?? 10} into 5 stages`, () => {
+                const lo = Number(v.min ?? 0), hi = Number(v.max ?? 10);
+                if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) { toast('Set a start and an end (from/to) first.', 'warning'); return; }
+                const step = (hi - lo + 1) / 5;
+                v.stages = Array.from({ length: 5 }, (_, k) => ({
+                    from: Math.round(lo + k * step), to: k === 4 ? hi : Math.round(lo + (k + 1) * step) - 1, name: '', text: '',
+                })).reverse();
+                redraw();
+            });
+            card.append(row(addStage, el('span', 'pc-hint', '·'), split));
+        }
+
+        // output
+        card.append(field('Its output sends', dropdown([
+            ['text', v.kind === 'text' ? 'the text' : 'the text of its stage'],
+            ['number', v.kind === 'text' ? 'the text' : 'the number'],
+            ['stage', 'the stage name'],
+        ], v.output ?? 'text', (x) => { v.output = x; soft(); }),
+        'When there is nothing to send, its wires carry nothing, and an Activate wire from it does not switch its block on.'));
+        card.append(destinationPicker(node, { id: v.id, name: v.name }));
+        box.append(card);
+    });
+
+    const add = el('div', 'pc-btn menu_button');
+    add.innerHTML = '<i class="fa-solid fa-plus"></i> Add a value';
+    add.addEventListener('click', () => { node.values.push(newStateValue(node.values.length ? `value${node.values.length + 1}` : 'energy')); redraw(); });
+    box.append(add);
+
+    box.append(field('Role', dropdown(ROLES.map(r => [r, r]), node.role || 'system', (x) => { node.role = x; soft(); })));
+    box.append(el('div', 'pc-hint', 'Use the values anywhere: {{state::energy}} is the number, {{stage::energy}} its stage name, {{statetext::energy}} its stage text. In a Decider rule or a wire condition, choose "Formula" and write e.g. energy <= 2.'));
+}
+
+let ruleSeq = 0;
+const ri2 = () => `_${++ruleSeq}`;
+
+/** A short note on a formula: fine, a mistake, or names that are not values. */
+function formulaNote(src, node) {
+    if (!String(src ?? '').trim()) return 'Formulas can use the values by name, turn and messages. Example: energy <= 2 and turn > 5';
+    const known = ['turn', 'messages', ...Object.values(current?.nodes ?? {}).filter(n => n.type === NODE_TYPES.STATE).flatMap(n => (n.values ?? []).map(v => v.name))];
+    const r = checkFormula(src, known);
+    if (!r.ok) return `⚠ ${r.error}`;
+    if (r.unknown.length) return `⚠ unknown name${r.unknown.length > 1 ? 's' : ''}: ${r.unknown.join(', ')} (counts as 0)`;
+    return '✓ looks right';
 }
 
 /* ------------------------------------------------------------------ */
@@ -2646,7 +2964,7 @@ function duplicateSelected(node, withInputs = false) {
     refreshPreview();
 }
 
-function onCanvasMenu({ event, node, wire, at }) {
+function onCanvasMenu({ event, node, wire, at, group = null, several = null }) {
     document.querySelector('.pc-menu')?.remove();
     const menu = el('div', 'pc-menu');
     menu.style.left = `${event.clientX}px`;
@@ -2659,7 +2977,15 @@ function onCanvasMenu({ event, node, wire, at }) {
         return i;
     };
 
-    if (wire?.loop) {
+    if (several) {
+        menu.append(el('div', 'pc-menu-head', `${several.length} blocks`));
+        menu.append(item(`Group these ${several.length} blocks`, 'fa-object-group', () => makeGroup(several, 'Group')));
+        menu.append(item(`Delete these ${several.length} blocks`, 'fa-trash-can', () => { canvas.deleteSelection(); selected = null; selectedKind = null; renderAll(); }));
+    } else if (group) {
+        menu.append(item(group.collapsed ? 'Open the group' : 'Fold into one block', group.collapsed ? 'fa-up-right-and-down-left-from-center' : 'fa-down-left-and-up-right-to-center', () => canvas.setCollapsed(group.id, !group.collapsed)));
+        menu.append(item('Rename\u2026', 'fa-pen', () => canvas.select({ kind: 'group', id: group.id })));
+        menu.append(item('Ungroup (the blocks stay)', 'fa-object-ungroup', () => { ungroup(current, group.id); selected = null; selectedKind = null; canvas.render(); renderInspector(); }));
+    } else if (wire?.loop) {
         // A loop has no kind to change: offer what matters for a loop.
         const from = current.nodes[wire.from];
         menu.append(el('div', 'pc-menu-head', `Loop: at most ${wire.loop.max ?? 3}\u00d7`));
@@ -2679,6 +3005,9 @@ function onCanvasMenu({ event, node, wire, at }) {
             menu.append(item(`Make it "${label}"`, 'fa-shuffle', () => canvas.setWireKind(wire.id, kind)));
         }
         if (wire.kind !== WIRE_KINDS.TOGETHER && !wire.loop) {
+            menu.append(wire.condition
+                ? item('Remove its condition', 'fa-filter-circle-xmark', () => { delete wire.condition; touch(); canvas.render(); renderInspector(); })
+                : item('Add a condition\u2026', 'fa-filter', () => { wire.condition = { mode: 'expr', formula: '' }; touch(); canvas.select({ kind: 'wire', id: wire.id }); }));
             menu.append(wire.mode === 'activate'
                 ? item('Send the text again', 'fa-align-left', () => { delete wire.mode; touch(); canvas.render(); renderInspector(); })
                 : item('Only switch it on (Activate)', 'fa-bolt', () => { wire.mode = 'activate'; touch(); canvas.render(); renderInspector(); }));
@@ -2741,6 +3070,7 @@ function onCanvasMenu({ event, node, wire, at }) {
             [NODE_TYPES.HISTORY, 'fa-clock-rotate-left', 'Chat history'],
             [NODE_TYPES.INJECTION, 'fa-syringe', 'Injection'],
             [NODE_TYPES.LOREBOOK, 'fa-book-atlas', 'Lorebook'],
+            [NODE_TYPES.STATE, 'fa-gauge-high', 'State'],
             [NODE_TYPES.NOTE, 'fa-note-sticky', 'Note'],
         ]) {
             menu.append(item(`Add ${label}`, icon, () => {

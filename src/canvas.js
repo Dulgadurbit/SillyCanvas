@@ -12,9 +12,10 @@
  */
 
 import {
-    NODE_TYPES, WIRE_KINDS, connect, disconnect, removeNode, touchGraph, wiresInto, deciderKeys,
-} from './state.js?v=0.11.0';
-import { selectLabel } from './select.js?v=0.11.0';
+    NODE_TYPES, WIRE_KINDS, connect, disconnect, removeNode, touchGraph, wiresInto, deciderKeys, outPorts, hasPorts,
+    groupMembers, ungroup,
+} from './state.js?v=0.12.0';
+import { selectLabel } from './select.js?v=0.12.0';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -37,6 +38,7 @@ const TYPE_LABEL = {
     [NODE_TYPES.NOTE]: 'Note',
     [NODE_TYPES.DECIDER]: 'Decider',
     [NODE_TYPES.LOREBOOK]: 'Lorebook',
+    [NODE_TYPES.STATE]: 'State',
 };
 
 /** A symbol per block type, so a canvas can be read at a glance. */
@@ -50,6 +52,7 @@ const TYPE_ICON = {
     [NODE_TYPES.NOTE]: 'fa-note-sticky',
     [NODE_TYPES.DECIDER]: 'fa-code-fork',
     [NODE_TYPES.LOREBOOK]: 'fa-book-atlas',
+    [NODE_TYPES.STATE]: 'fa-gauge-high',
 };
 
 /** Whether the last decision took this output. Decisions used to name one key; now a list. */
@@ -71,6 +74,7 @@ export function ruleLabel(c) {
     const terms = () => String(c.terms || '').split('\n').map(t => t.trim()).filter(Boolean);
     switch (c.mode) {
         case 'probability': return `${c.chance ?? 100}% of the time`;
+        case 'expr': return String(c.formula ?? '').trim() || 'no formula yet';
         case 'search': {
             const t = terms();
             const where = { incoming: 'input', lastUser: 'user msg', lastAssistant: 'last reply', lastN: `last ${c.n || 3}`, chat: 'chat' }[c.scope || 'lastUser'] ?? '';
@@ -113,7 +117,9 @@ export class Canvas {
         this.host = host;
         this.hooks = hooks;
         this.graph = null;
-        this.selection = null;      // {kind:'node'|'wire', id}
+        this.selection = null;      // {kind:'node'|'wire'|'group', id}
+        this.multi = new Set();     // blocks picked with Shift-click or a Shift-drag box
+        this.marquee = null;
         this.drag = null;
         this.linking = null;
         this.trace = null;          // last compile trace, keyed by node id
@@ -309,14 +315,148 @@ export class Canvas {
     #drawNodes() {
         const frag = document.createDocumentFragment();
         this.reaching = this.#reaching();
+        const groups = this.graph.groups ?? {};
+        // A group whose blocks have all gone goes too.
+        for (const gid of Object.keys(groups)) {
+            if (!Object.values(this.graph.nodes).some(n => n.group === gid)) delete groups[gid];
+        }
         const nodes = Object.values(this.graph.nodes)
+            .filter(n => !this.#folded(n))
             .sort((a, b) => (a.y - b.y) || (a.x - b.x));
 
         for (const node of nodes) {
             frag.append(this.#nodeElement(node));
         }
+        for (const g of Object.values(groups)) if (g.collapsed) frag.append(this.#groupElement(g));
         this.nodeLayer.innerHTML = '';
         this.nodeLayer.append(frag);
+        // Open groups get a frame drawn around their blocks, behind them,
+        // once the blocks are on the page and their heights are known.
+        for (const g of Object.values(groups)) if (!g.collapsed) this.#groupFrame(g);
+        this.#paintMulti();
+    }
+
+    /** The folded group a block is hidden in, if any. */
+    #folded(node) {
+        const g = node?.group ? this.graph.groups?.[node.group] : null;
+        return g?.collapsed ? g : null;
+    }
+
+    /** Wires crossing a group's edge: what comes in and what goes out. */
+    #groupEdges(gid) {
+        const inside = (id) => this.graph.nodes[id]?.group === gid;
+        const ins = [], outs = [];
+        for (const w of Object.values(this.graph.wires)) {
+            if (w.kind === WIRE_KINDS.TOGETHER || w.loop) continue;
+            if (inside(w.to) && !inside(w.from)) ins.push(w);
+            if (inside(w.from) && !inside(w.to)) outs.push(w);
+        }
+        return { ins, outs };
+    }
+
+    /** A folded group, drawn as one block. */
+    #groupElement(g) {
+        const members = groupMembers(this.graph, g.id).sort((a, b) => (a.y - b.y) || (a.x - b.x));
+        const el = document.createElement('div');
+        el.className = `pc-node pc-node-group${this.selection?.kind === 'group' && this.selection.id === g.id ? ' pc-selected' : ''}`;
+        el.dataset.group = g.id;
+        el.style.left = `${g.x}px`;
+        el.style.top = `${g.y}px`;
+        el.style.width = `${g.w || 260}px`;
+        const head = document.createElement('div');
+        head.className = 'pc-node-head';
+        const badge = document.createElement('span');
+        badge.className = 'pc-badge';
+        const icon = document.createElement('i');
+        icon.className = 'fa-solid fa-object-group pc-badge-icon';
+        badge.append(icon, ' Group');
+        const title = document.createElement('span');
+        title.className = 'pc-node-title';
+        title.textContent = g.title || 'Group';
+        const count = document.createElement('span');
+        count.className = 'pc-tok';
+        count.textContent = `${members.length} blocks`;
+        head.append(badge, title, count);
+        const body = document.createElement('div');
+        body.className = 'pc-node-body';
+        body.textContent = members.map(n => n.title || 'Untitled').join(' \u00b7 ');
+        el.append(head, body);
+        const { ins, outs } = this.#groupEdges(g.id);
+        const name = (id) => this.graph.nodes[id]?.title || 'Untitled';
+        const io = document.createElement('div');
+        io.className = 'pc-node-model pc-group-io';
+        const inNames = [...new Set(ins.map(w => name(w.from)))];
+        const outNames = [...new Set(outs.map(w => name(w.to)))];
+        io.textContent = `${inNames.length ? `in: ${inNames.join(', ')}` : 'nothing wired in'}  \u2192  ${outNames.length ? `out: ${outNames.join(', ')}` : 'goes nowhere'}`;
+        el.append(io);
+        const hint = document.createElement('div');
+        hint.className = 'pc-node-cond';
+        hint.textContent = 'double-click to open';
+        el.append(hint);
+        for (const dir of ['in', 'out']) {
+            const dot = document.createElement('div');
+            dot.className = `pc-gport pc-gport-${dir}`;
+            el.append(dot);
+        }
+        return el;
+    }
+
+    /** An open group: a labelled frame around its blocks, with a button to fold it again. */
+    #groupFrame(g) {
+        const members = groupMembers(this.graph, g.id);
+        if (!members.length) return;
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+        for (const n of members) {
+            const el = this.nodeLayer.querySelector(`.pc-node[data-id="${CSS.escape(n.id)}"]`);
+            x0 = Math.min(x0, n.x); y0 = Math.min(y0, n.y);
+            x1 = Math.max(x1, n.x + (n.w || 260)); y1 = Math.max(y1, n.y + (el ? el.offsetHeight : 90));
+        }
+        const frame = document.createElement('div');
+        frame.className = `pc-group-frame${this.selection?.kind === 'group' && this.selection.id === g.id ? ' pc-selected' : ''}`;
+        frame.dataset.group = g.id;
+        frame.style.left = `${x0 - 18}px`;
+        frame.style.top = `${y0 - 40}px`;
+        frame.style.width = `${x1 - x0 + 36}px`;
+        frame.style.height = `${y1 - y0 + 58}px`;
+        const head = document.createElement('div');
+        head.className = 'pc-group-frame-head';
+        const t = document.createElement('span');
+        t.textContent = g.title || 'Group';
+        const fold = document.createElement('i');
+        fold.className = 'fa-solid fa-down-left-and-up-right-to-center pc-group-fold';
+        fold.dataset.action = 'collapse';
+        fold.title = 'Fold into one block';
+        head.append(t, fold);
+        frame.append(head);
+        this.nodeLayer.prepend(frame);
+    }
+
+    #paintMulti() {
+        for (const el of this.nodeLayer.querySelectorAll('.pc-node[data-id]')) {
+            el.classList.toggle('pc-multi', this.multi.has(el.dataset.id));
+        }
+    }
+
+    /** Pick several blocks (Shift-click, or a Shift-drag box). */
+    setMulti(ids) {
+        this.multi = new Set(ids);
+        this.#paintMulti();
+        this.hooks.onMulti?.([...this.multi]);
+    }
+
+    /** Fold or unfold a group. A folded group sits where its top-left block was. */
+    setCollapsed(gid, collapsed) {
+        const g = this.graph.groups?.[gid];
+        if (!g) return;
+        if (collapsed) {
+            const members = groupMembers(this.graph, gid);
+            g.x = Math.min(...members.map(n => n.x));
+            g.y = Math.min(...members.map(n => n.y));
+        }
+        g.collapsed = collapsed;
+        touchGraph(this.graph);
+        this.render();
+        this.hooks.onChange?.();
     }
 
     #nodeElement(node) {
@@ -425,14 +565,39 @@ export class Canvas {
 
             // "?" opens the guide.
             const help = document.createElement('div');
-            help.className = 'pc-help fa-solid fa-circle-question';
+            help.className = 'pc-help-btn fa-solid fa-circle-question';
             help.title = 'How Deciders work';
             help.addEventListener('mousedown', e => e.stopPropagation());
             help.addEventListener('click', (e) => { e.stopPropagation(); this.hooks.onHelp?.(node); });
             head.insertBefore(help, head.querySelector('.pc-toggle'));
         }
 
-        if (node.type !== NODE_TYPES.DECIDER && node.condition && node.condition.mode !== 'always') {
+        if (node.type === NODE_TYPES.STATE) {
+            body.remove();
+            const list = document.createElement('div');
+            list.className = 'pc-dec-keys pc-state-rows';
+            const st = this.trace?.get(node.id)?.state ?? null;
+            if (!(node.values ?? []).length) {
+                const none = document.createElement('div');
+                none.className = 'pc-dec-mode pc-dec-unset';
+                none.textContent = 'No values yet \u2014 select it and add one';
+                list.append(none);
+            }
+            for (const v of node.values ?? []) {
+                const val = st ? st[v.id] : undefined;
+                const stage = val === undefined ? null : (v.stages ?? []).find(s => {
+                    const lo = s.from === '' || s.from == null ? -Infinity : Number(s.from);
+                    const hi = s.to === '' || s.to == null ? Infinity : Number(s.to);
+                    return Number(val) >= lo && Number(val) <= hi;
+                });
+                const shown = val === undefined ? `starts at ${v.start ?? 0}` : `${val}${v.kind !== 'text' && v.max !== '' && v.max != null ? `/${v.max}` : ''}${stage?.name ? ` \u00b7 ${stage.name}` : ''}`;
+                const rules = (v.rules ?? []).length;
+                list.append(this.#keyRow(v, `${shown}${rules ? ` \u00b7 ${rules} rule${rules === 1 ? '' : 's'}` : ''}${(v.stages ?? []).length ? ` \u00b7 ${v.stages.length} stages` : ''}`, !!stage?.text));
+            }
+            el.append(list);
+        }
+
+        if (node.type !== NODE_TYPES.DECIDER && node.type !== NODE_TYPES.STATE && node.condition && node.condition.mode !== 'always') {
             const cond = document.createElement('div');
             cond.className = 'pc-node-cond';
             cond.innerHTML = `<i class="fa-solid fa-code-branch"></i> ${this.#conditionLabel(node.condition)}`;
@@ -496,8 +661,8 @@ export class Canvas {
             el.append(badge);
         }
 
-        if (node.type === NODE_TYPES.DECIDER) {
-            const keys = deciderKeys(node);
+        if (hasPorts(node)) {
+            const keys = outPorts(node);
             const chosen = this.trace?.get(node.id)?.decision ?? null;
             keys.forEach((k, i) => {
                 const port = document.createElement('div');
@@ -506,7 +671,7 @@ export class Canvas {
                 port.dataset.dir = 'out';
                 port.dataset.port = k.id;
                 port.style.left = `${100 * (i + 1) / (keys.length + 1)}%`;
-                port.title = `Drag to wire the "${k.name}" path`;
+                port.title = node.type === NODE_TYPES.STATE ? `Drag to send "${k.name}"` : `Drag to wire the "${k.name}" path`;
                 const tag = document.createElement('span');
                 tag.className = 'pc-port-keyname';
                 tag.textContent = k.name || 'key';
@@ -516,7 +681,7 @@ export class Canvas {
         }
 
         if (node.type !== NODE_TYPES.NOTE) {
-            if (node.type !== NODE_TYPES.OUTPUT && node.type !== NODE_TYPES.DECIDER) {
+            if (node.type !== NODE_TYPES.OUTPUT && !hasPorts(node)) {
                 const outPort = document.createElement('div');
                 outPort.className = 'pc-port pc-port-out';
                 outPort.dataset.node = node.id;
@@ -658,7 +823,7 @@ export class Canvas {
             if (link.dir === 'tie' && n.type !== NODE_TYPES.GENERATE) continue;
             const q = link.dir === 'tie'
                 ? this.#sidePos(n.id, p.x < n.x + (n.w || 260) / 2 ? 'left' : 'right')
-                : link.dir === 'in' && n.type === NODE_TYPES.DECIDER
+                : link.dir === 'in' && hasPorts(n)
                     ? this.#portPos(n.id, 'out', this.#nearestKey(n.id, p))
                     : this.#portPos(n.id, link.dir === 'out' ? 'in' : 'out');
             const d = Math.hypot(q.x - p.x, q.y - p.y);
@@ -683,10 +848,17 @@ export class Canvas {
         const el = this.nodeLayer.querySelector(`.pc-node[data-id="${CSS.escape(nodeId)}"]`);
         const node = this.graph.nodes[nodeId];
         if (!node) return { x: 0, y: 0 };
+        const fold = this.#folded(node);
+        if (fold) {
+            const gel = this.nodeLayer.querySelector(`.pc-node-group[data-group="${CSS.escape(fold.id)}"]`);
+            const gh = gel ? gel.offsetHeight : 80;
+            const gw = fold.w || 260;
+            return dir === 'out' ? { x: fold.x + gw / 2, y: fold.y + gh } : { x: fold.x + gw / 2, y: fold.y };
+        }
         const w = node.w || 260;
         const h = el ? el.offsetHeight : 90;
-        if (dir === 'out' && node.type === NODE_TYPES.DECIDER) {
-            const keys = deciderKeys(node);
+        if (dir === 'out' && hasPorts(node)) {
+            const keys = outPorts(node);
             const i = Math.max(0, keys.findIndex(k => k.id === portId));
             return { x: node.x + w * (i + 1) / (keys.length + 1), y: node.y + h };
         }
@@ -699,7 +871,7 @@ export class Canvas {
     #nearestKey(nodeId, p) {
         const node = this.graph.nodes[nodeId];
         let best = null, bestD = Infinity;
-        for (const k of deciderKeys(node)) {
+        for (const k of outPorts(node)) {
             const q = this.#portPos(nodeId, 'out', k.id);
             const d = Math.abs(q.x - p.x);
             if (d < bestD) { bestD = d; best = k.id; }
@@ -712,6 +884,8 @@ export class Canvas {
         const el = this.nodeLayer.querySelector(`.pc-node[data-id="${CSS.escape(nodeId)}"]`);
         const node = this.graph.nodes[nodeId];
         if (!node) return { x: 0, y: 0 };
+        const fold = this.#folded(node);
+        if (fold) return { x: side === 'right' ? fold.x + (fold.w || 260) : fold.x, y: fold.y + 30 };
         const w = node.w || 260;
         const h = el ? el.offsetHeight : 90;
         return { x: side === 'right' ? node.x + w : node.x, y: node.y + h / 2 };
@@ -773,6 +947,9 @@ export class Canvas {
         this.svg.insertAdjacentHTML('beforeend', `<defs><marker id="pc-loop-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" class="pc-loop-arrow"/></marker></defs>`);
 
         for (const wire of Object.values(this.graph.wires)) {
+            // Inside a folded group, wires are out of sight.
+            const fa = this.#folded(this.graph.nodes[wire.from]), fb = this.#folded(this.graph.nodes[wire.to]);
+            if (fa && fa === fb) continue;
             const tie = wire.kind === WIRE_KINDS.TOGETHER;
 
             // A tie joins two blocks side by side, because nothing flows along
@@ -796,7 +973,7 @@ export class Canvas {
             path.setAttribute('d', d);
             path.dataset.id = wire.id;
             const srcNode = this.graph.nodes[wire.from];
-            const isKey = srcNode?.type === NODE_TYPES.DECIDER;
+            const isKey = hasPorts(srcNode);
             const chosen = isKey ? this.trace?.get(wire.from)?.decision : undefined;
             const untaken = isKey && chosen !== undefined && chosen !== null && !took(chosen, wire.port);
             const offWire = this.graph.nodes[wire.from]?.enabled === false || this.graph.nodes[wire.to]?.enabled === false;
@@ -808,7 +985,7 @@ export class Canvas {
             const side = wire.loop ? this.#loopSide(from, to, wire) : null;
             label.setAttribute('x', side ? side.x + 10 : (from.x + to.x) / 2);
             label.setAttribute('y', side ? side.y + 4 : (from.y + to.y) / 2);
-            const keyName = isKey ? (deciderKeys(srcNode).find(k => k.id === wire.port)?.name ?? 'key') : null;
+            const keyName = isKey ? (outPorts(srcNode).find(k => k.id === wire.port)?.name ?? 'key') : null;
             label.textContent = tie ? TOGETHER_LABEL
                 : wire.loop ? `\u21ba ${keyName ? keyName + ' \u00b7 ' : ''}${wire.loop.max ?? 3}\u00d7 max`
                 // The output's name is already on its dot, so a mode wire just says what it does.
@@ -823,6 +1000,11 @@ export class Canvas {
                 tip.textContent = 'Loop: runs this section again, at most this many times. Click to change.';
                 label.append(tip);
                 path.setAttribute('marker-end', 'url(#pc-loop-arrow)');
+            }
+            if (!tie && !wire.loop && wire.condition && wire.condition.mode !== 'always') {
+                label.textContent += ` \u00b7 if ${ruleLabel(wire.condition)}`;
+                label.classList.add('pc-wire-label-filter');
+                path.classList.add('pc-wire-conditional');
             }
             const filter = !tie && !wire.loop && !mode ? selectLabel(wire.select) : '';
             if (filter) {
@@ -860,8 +1042,25 @@ export class Canvas {
         host.addEventListener('mousedown', (e) => {
             if (!this.graph) return;
             const port = e.target.closest('.pc-port');
-            const nodeEl = e.target.closest('.pc-node');
+            const nodeEl = e.target.closest('.pc-node[data-id]');
+            const groupEl = e.target.closest('.pc-node-group, .pc-group-frame-head');
             const wireHit = e.target.closest('.pc-wire-hit') ?? e.target.closest('.pc-wire-label-loop');
+
+            if (groupEl && e.button === 0 && !port) {
+                const gid = groupEl.dataset.group ?? groupEl.closest('[data-group]')?.dataset.group;
+                const g = this.graph.groups?.[gid];
+                if (!g) return;
+                e.preventDefault();
+                if (e.target.closest('[data-action="collapse"]')) { this.setCollapsed(gid, true); return; }
+                this.multi.clear();
+                this.select({ kind: 'group', id: gid });
+                const start = this.toGraph(e.clientX, e.clientY);
+                this.drag = {
+                    group: gid, sx: start.x, sy: start.y, gx: g.x, gy: g.y, moved: false,
+                    starts: groupMembers(this.graph, gid).map(n => [n.id, n.x, n.y]),
+                };
+                return;
+            }
 
             if (port) {
                 e.preventDefault();
@@ -869,7 +1068,7 @@ export class Canvas {
                 const dir = port.dataset.dir;
                 const nodeId = port.dataset.node;
                 let key = port.dataset.port ?? null;
-                if (dir === 'out' && !key && this.graph.nodes[nodeId]?.type === NODE_TYPES.DECIDER) {
+                if (dir === 'out' && !key && hasPorts(this.graph.nodes[nodeId])) {
                     key = this.#nearestKey(nodeId, this.toGraph(e.clientX, e.clientY));
                 }
                 this.linking = {
@@ -889,6 +1088,20 @@ export class Canvas {
             if (nodeEl && e.button === 0) {
                 const id = nodeEl.dataset.id;
                 const node = this.graph.nodes[id];
+                // Shift or Ctrl: add to (or take out of) a selection of several.
+                if (e.shiftKey || e.ctrlKey || e.metaKey) {
+                    if (!this.multi.size && this.selection?.kind === 'node' && this.selection.id !== id) this.multi.add(this.selection.id);
+                    if (this.multi.has(id)) this.multi.delete(id); else this.multi.add(id);
+                    this.setMulti([...this.multi]);
+                    return;
+                }
+                if (this.multi.size > 1 && this.multi.has(id)) {
+                    // Drag them all together.
+                    const start = this.toGraph(e.clientX, e.clientY);
+                    this.drag = { several: [...this.multi].map(m => [m, this.graph.nodes[m]?.x ?? 0, this.graph.nodes[m]?.y ?? 0]), sx: start.x, sy: start.y, moved: false };
+                    return;
+                }
+                if (this.multi.size) this.setMulti([]);
                 this.select({ kind: 'node', id });
                 if (e.target.closest('.pc-toggle')) return;
                 const start = this.toGraph(e.clientX, e.clientY);
@@ -909,7 +1122,18 @@ export class Canvas {
                 return;
             }
 
+            if (e.button === 0 && e.shiftKey) {
+                // Shift-drag on empty canvas: a box that picks every block it touches.
+                const p = this.toGraph(e.clientX, e.clientY);
+                const box = document.createElement('div');
+                box.className = 'pc-marquee';
+                this.nodeLayer.append(box);
+                this.marquee = { x0: p.x, y0: p.y, x1: p.x, y1: p.y, box };
+                return;
+            }
+
             if (e.button === 0 || e.button === 1) {
+                if (this.multi.size) this.setMulti([]);
                 this.select(null);
                 const v = this.view;
                 this.pan = { x: e.clientX - v.x, y: e.clientY - v.y };
@@ -929,6 +1153,35 @@ export class Canvas {
                     this.linking.hover = target;
                     this.#nodeEl(target)?.classList.add('pc-link-target');
                 }
+                return;
+            }
+            if (this.marquee) {
+                const p = this.toGraph(e.clientX, e.clientY);
+                const m = this.marquee;
+                m.x1 = p.x; m.y1 = p.y;
+                Object.assign(m.box.style, {
+                    left: `${Math.min(m.x0, m.x1)}px`, top: `${Math.min(m.y0, m.y1)}px`,
+                    width: `${Math.abs(m.x1 - m.x0)}px`, height: `${Math.abs(m.y1 - m.y0)}px`,
+                });
+                return;
+            }
+            if (this.drag?.group || this.drag?.several) {
+                const p = this.toGraph(e.clientX, e.clientY);
+                const d = this.drag;
+                const dx = Math.round(p.x - d.sx), dy = Math.round(p.y - d.sy);
+                if (!dx && !dy && !d.moved) return;
+                d.moved = true;
+                for (const [id, x, y] of d.starts ?? d.several) {
+                    const n = this.graph.nodes[id];
+                    if (!n) continue;
+                    n.x = x + dx; n.y = y + dy;
+                }
+                if (d.group) {
+                    const g = this.graph.groups?.[d.group];
+                    if (g) { g.x = d.gx + dx; g.y = d.gy + dy; }
+                }
+                this.#drawNodes();
+                this.#drawWires();
                 return;
             }
             if (this.drag) {
@@ -976,7 +1229,7 @@ export class Canvas {
                     const fromId = (tie || link.dir === 'out') ? link.nodeId : targetId;
                     const toId = (tie || link.dir === 'out') ? targetId : link.nodeId;
                     let port = link.dir === 'out' ? link.port : null;
-                    if (link.dir === 'in' && this.graph.nodes[fromId]?.type === NODE_TYPES.DECIDER) {
+                    if (link.dir === 'in' && hasPorts(this.graph.nodes[fromId])) {
                         // Dragged up from a block onto a Decider: use the key nearest where it landed.
                         port = this.#nearestKey(fromId, this.toGraph(e.clientX, e.clientY));
                     }
@@ -988,6 +1241,29 @@ export class Canvas {
                         if (res.wire?.loop) { this.render(); this.select({ kind: 'wire', id: res.wire.id }); return; }
                     }
                 }
+                this.render();
+                return;
+            }
+            if (this.marquee) {
+                const m = this.marquee;
+                this.marquee = null;
+                m.box.remove();
+                const [x0, x1] = [Math.min(m.x0, m.x1), Math.max(m.x0, m.x1)];
+                const [y0, y1] = [Math.min(m.y0, m.y1), Math.max(m.y0, m.y1)];
+                const hit = [];
+                for (const n of Object.values(this.graph.nodes)) {
+                    if (this.#folded(n)) continue;
+                    const el = this.nodeLayer.querySelector(`.pc-node[data-id="${CSS.escape(n.id)}"]`);
+                    const h = el ? el.offsetHeight : 90;
+                    if (n.x < x1 && n.x + (n.w || 260) > x0 && n.y < y1 && n.y + h > y0) hit.push(n.id);
+                }
+                this.setMulti(hit);
+                return;
+            }
+            if (this.drag?.group || this.drag?.several) {
+                const d = this.drag;
+                this.drag = null;
+                if (d.moved) { touchGraph(this.graph); this.hooks.onChange?.(); }
                 this.render();
                 return;
             }
@@ -1018,7 +1294,14 @@ export class Canvas {
         });
 
         host.addEventListener('dblclick', (e) => {
-            const nodeEl = e.target.closest('.pc-node');
+            const groupEl = e.target.closest('.pc-node-group, .pc-group-frame-head');
+            if (groupEl) {
+                const gid = groupEl.dataset.group ?? groupEl.closest('[data-group]')?.dataset.group;
+                const g = this.graph.groups?.[gid];
+                if (g) this.setCollapsed(gid, !g.collapsed);
+                return;
+            }
+            const nodeEl = e.target.closest('.pc-node[data-id]');
             if (nodeEl) {
                 this.hooks.onOpen?.(this.graph.nodes[nodeEl.dataset.id]);
                 return;
@@ -1030,10 +1313,14 @@ export class Canvas {
 
         host.addEventListener('contextmenu', (e) => {
             e.preventDefault();
-            const nodeEl = e.target.closest('.pc-node');
+            const nodeEl = e.target.closest('.pc-node[data-id]');
+            const groupEl = e.target.closest('.pc-node-group, .pc-group-frame-head');
+            const gid = groupEl ? (groupEl.dataset.group ?? groupEl.closest('[data-group]')?.dataset.group) : null;
             const wireHit = e.target.closest('.pc-wire-hit') ?? e.target.closest('.pc-wire-label-loop');
             this.hooks.onContextMenu?.({
                 event: e,
+                group: gid ? this.graph.groups?.[gid] ?? null : null,
+                several: nodeEl && this.multi.size > 1 && this.multi.has(nodeEl.dataset.id) ? [...this.multi] : null,
                 node: nodeEl ? this.graph.nodes[nodeEl.dataset.id] : null,
                 wire: wireHit ? this.graph.wires[wireHit.dataset.id] : null,
                 at: this.toGraph(e.clientX, e.clientY),
@@ -1054,9 +1341,11 @@ export class Canvas {
     select(sel) {
         this.selection = sel;
         this.render();
-        this.hooks.onSelect?.(sel
-            ? (sel.kind === 'node' ? this.graph.nodes[sel.id] : this.graph.wires[sel.id])
-            : null, sel?.kind ?? null);
+        const pick = !sel ? null
+            : sel.kind === 'node' ? this.graph.nodes[sel.id]
+            : sel.kind === 'group' ? this.graph.groups?.[sel.id]
+            : this.graph.wires[sel.id];
+        this.hooks.onSelect?.(pick ?? null, sel?.kind ?? null);
     }
 
     cycleWire(wireId) {
@@ -1084,8 +1373,17 @@ export class Canvas {
     }
 
     deleteSelection() {
+        if (this.multi.size > 1) {
+            for (const id of this.multi) removeNode(this.graph, id);
+            this.multi.clear();
+            this.selection = null;
+            this.render();
+            this.hooks.onChange?.();
+            return;
+        }
         if (!this.selection) return;
         if (this.selection.kind === 'wire') disconnect(this.graph, this.selection.id);
+        else if (this.selection.kind === 'group') ungroup(this.graph, this.selection.id);   // the blocks stay
         else removeNode(this.graph, this.selection.id);
         this.selection = null;
         this.render();
