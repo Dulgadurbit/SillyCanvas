@@ -63,7 +63,7 @@ assert.deepEqual(r.plan.messages.map(m => m.content), ['clean draft']);
 const dec = seen.find(e => e.decision);
 assert.equal(dec.label, 'dec → DESLOP');
 assert.match(dec.text, /"Elara"/);
-assert.ok(r.plan.trace.some(t => t.id === 'dec' && t.decision === 'k1'));
+assert.ok(r.plan.trace.some(t => t.id === 'dec' && [].concat(t.decision).includes('k1')));
 
 // 2. clean -> fallback path, the Deslop block is never called
 globalThis.draft = 'She laughed.';
@@ -87,7 +87,7 @@ assert.match(t.why, /send time/);
     const pp = await compile(g, { dryRun: true, live: liveChat });
     const tt = pp.trace.find(x => x.id === 'dec');
     assert.equal(tt.status, 'in');
-    assert.equal(tt.decision, 'k1');
+    assert.deepEqual(tt.decision, ['k1']);
 }
 
 // 5. evaluation details

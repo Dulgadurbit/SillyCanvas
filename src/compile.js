@@ -22,8 +22,10 @@
  * no exceptions, because a graph you have to trace to predict is not a tool.
  */
 
-import { ctx, safe, NODE_TYPES, WIRE_KINDS, wiresInto, wiresOutOf, outputNode, togetherGroup, groupWires, deciderKeys } from './state.js?v=0.9.0';
-import { stPrompt, MARKER_SOURCES } from './library.js?v=0.9.0';
+import { ctx, safe, NODE_TYPES, WIRE_KINDS, wiresInto, wiresOutOf, outputNode, togetherGroup, groupWires, deciderKeys, settings } from './state.js?v=0.10.0';
+import { stPrompt, MARKER_SOURCES } from './library.js?v=0.10.0';
+import { applySelect } from './select.js?v=0.10.0';
+import { toEntry, selectLore, loreMessages, blockBooks, stripFromWorldInfo } from './lore.js?v=0.10.0';
 
 /* ------------------------------------------------------------------ */
 /* live context                                                        */
@@ -39,6 +41,8 @@ export async function gatherContext({ dryRun = false } = {}) {
     const card = safe(() => c.getCharacterCardFields()) ?? {};
     const chat = safe(() => Array.isArray(c.chat) ? c.chat : []) ?? [];
 
+    listenForActivations(c);
+    const scanStarted = Date.now();
     let wiBefore = null, wiAfter = null;
     try {
         const wi = await c.getWorldInfoPrompt(
@@ -53,9 +57,14 @@ export async function gatherContext({ dryRun = false } = {}) {
         wiAfter = null;
     }
 
+    // On a real send SillyTavern reports what it activated; a preview estimates.
+    const activated = !dryRun && lastActivated && lastActivated.at >= scanStarted ? lastActivated.entries : null;
+    const lore = await loadLore(c, activated);
+
     return {
         card,
         chat,
+        lore,
         name1: c.name1,
         name2: c.name2,
         worldInfo: { before: wiBefore, after: wiAfter },
@@ -63,6 +72,96 @@ export async function gatherContext({ dryRun = false } = {}) {
         model: safe(() => c.getChatCompletionModel()) ?? '',
         substitute: (t) => safe(() => c.substituteParams(String(t ?? '')), String(t ?? '')),
     };
+}
+
+/* ------------------------------------------------------------------ */
+/* lorebooks                                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * What SillyTavern activated on its last real World Info scan. It only says
+ * so through an event, so listen once and keep the latest.
+ */
+let lastActivated = null;
+function listenForActivations(c) {
+    if (listenForActivations.done || !c?.eventSource?.on || !c.eventTypes?.WORLD_INFO_ACTIVATED) return;
+    listenForActivations.done = true;
+    c.eventSource.on(c.eventTypes.WORLD_INFO_ACTIVATED, (entries) => {
+        lastActivated = { at: Date.now(), entries: (entries ?? []).map(e => ({ world: e.world, uid: e.uid })) };
+    });
+}
+
+/**
+ * Load the lorebooks a canvas could need. Only runs when some canvas has a
+ * Lorebook block, so nobody else pays for the lookups.
+ *
+ * The chat's, persona's and character's own lorebooks come from getContext().
+ * The global selection, a character's extra lorebooks and the matching
+ * defaults are not exposed there, so they are read from SillyTavern's
+ * world-info module if it can be reached, and simply left out if not.
+ */
+async function loadLore(c, activated) {
+    const out = { sources: { chat: [], character: [], persona: [], global: [] }, books: {}, activated, defaults: { depth: 2 }, errors: [], names: [] };
+    const graphs = Object.values(safe(() => settings().graphs) ?? {});
+    const nodes = graphs.flatMap(g => Object.values(g?.nodes ?? {})).filter(n => n?.type === NODE_TYPES.LOREBOOK);
+    if (!nodes.length || typeof c.loadWorldInfo !== 'function') return out;
+
+    let WI = null;
+    try { WI = await import('/scripts/world-info.js'); } catch { WI = null; }
+
+    const str = (v) => (typeof v === 'string' && v.trim() ? [v.trim()] : []);
+    out.sources.chat = str(c.chatMetadata?.world_info);
+    const char = safe(() => c.characters?.[c.characterId]);
+    const file = String(char?.avatar ?? '').replace(/\.[^/.]+$/, '');
+    const extra = safe(() => WI?.world_info?.charLore?.find(e => e.name === file)?.extraBooks) ?? [];
+    out.sources.character = [...str(char?.data?.extensions?.world), ...(Array.isArray(extra) ? extra : [])];
+    out.sources.persona = str(c.powerUserSettings?.persona_description_lorebook);
+    out.sources.global = Array.isArray(safe(() => WI?.selected_world_info)) ? [...WI.selected_world_info] : [];
+    out.defaults = {
+        depth: Number(safe(() => WI?.world_info_depth)) || 2,
+        caseSensitive: !!safe(() => WI?.world_info_case_sensitive),
+        wholeWords: !!safe(() => WI?.world_info_match_whole_words),
+    };
+    out.names = safe(() => c.getWorldInfoNames?.()) ?? [];
+
+    const wanted = new Set([...Object.values(out.sources).flat(), ...nodes.flatMap(n => n.books ?? [])].filter(Boolean));
+    for (const name of wanted) {
+        try {
+            const data = await c.loadWorldInfo(name);
+            if (!data) { out.errors.push(`Lorebook "${name}" was not found.`); continue; }
+            out.books[name] = Object.values(data.entries ?? {}).map(e => toEntry(e, name));
+        } catch (err) {
+            out.errors.push(`Could not read lorebook "${name}": ${err?.message ?? err}`);
+        }
+    }
+    return out;
+}
+
+/**
+ * The context as one graph sees it: if a Lorebook block asks for it, its
+ * lorebooks are taken out of SillyTavern's own World Info text, so the same
+ * lore is not sent twice. Cached per graph and context.
+ */
+const loreViews = new WeakMap();
+function liveFor(graph, live) {
+    const blocks = Object.values(graph.nodes).filter(n => n.type === NODE_TYPES.LOREBOOK && n.excludeFromWI && n.enabled !== false);
+    if (!blocks.length || !live?.worldInfo) return live;
+    let byGraph = loreViews.get(live);
+    if (!byGraph) { byGraph = new Map(); loreViews.set(live, byGraph); }
+    const key = blocks.map(b => `${b.id}:${blockBooks(b, live.lore).join('|')}`).join(';');
+    const hit = byGraph.get(graph.id);
+    if (hit?.key === key) return hit.view;
+    const entries = [...new Set(blocks.flatMap(b => blockBooks(b, live.lore)))].flatMap(name => live.lore?.books?.[name] ?? []);
+    const sub = live.substitute ?? (t => t);
+    const view = {
+        ...live,
+        worldInfo: {
+            before: live.worldInfo.before === null ? null : stripFromWorldInfo(live.worldInfo.before, entries, sub),
+            after: live.worldInfo.after === null ? null : stripFromWorldInfo(live.worldInfo.after, entries, sub),
+        },
+    };
+    byGraph.set(graph.id, { key, view });
+    return view;
 }
 
 /* ------------------------------------------------------------------ */
@@ -269,6 +368,7 @@ export function evaluateRule(cond, live, extra = {}) {
             const mode = cond.matchMode || 'any';
             return {
                 pass,
+                found: mode === 'none' ? [] : found,
                 why: found.length
                     ? `${mode === 'none' ? 'found' : 'matched'} ${found.slice(0, 3).map(t => `"${t}"`).join(', ')} in ${where}`
                     : `no term found in ${where}`,
@@ -317,14 +417,68 @@ function emptyRule(cond) {
 }
 
 /**
- * Pick a Decider's path. No model is involved: the keys are checked top to
- * bottom, the first one whose rules match wins, and the fallback takes
- * everything else — so a Decider always goes somewhere.
+ * How a Decider routes. `null` means it has not been set up yet: a new
+ * Decider starts that way and sends nothing on until you choose.
+ * Old canvases saved 'rules' (or nothing) and keep working as 'first'.
+ */
+export function routingMode(node) {
+    if (node?.mode === null || node?.mode === '') return null;
+    if (node?.mode === undefined || node.mode === 'rules') return 'first';
+    return ['all', 'first', 'random', 'ai'].includes(node.mode) ? node.mode : 'first';
+}
+
+/** Whether a decision sends things down this output. */
+export function picks(decision, keyId) {
+    if (!decision) return false;
+    if (Array.isArray(decision.keys)) return decision.keys.includes(keyId);
+    return decision.key === keyId;
+}
+
+/**
+ * Check one output's rules. Rules are checked in order and stopped as soon
+ * as the answer is known, so an AI rule is only asked when nothing before it
+ * has settled things.
+ * @returns {{pass:boolean, why:string, matched:string[], empty?:boolean} | {needs: object, incoming: string}}
+ */
+export function checkKey(k, live, incoming, extra = {}) {
+    const rules = (k.conditions ?? []).filter(c => c && !emptyRule(c));
+    if (!rules.length) return { pass: false, why: 'no rules yet', matched: [], empty: true };
+    const all = k.match === 'all';
+    const results = [];
+    let ok = all;
+    for (const c of rules) {
+        // A rule can read one particular input instead of all of them.
+        const text = c.input && extra.inputs ? (extra.inputs[c.input] ?? '') : incoming;
+        let r = evaluateRule(c, live, { ...extra, incoming: text });
+        if (r.needsAi) return { needs: c, incoming: text };
+        if (c.not) r = { pass: !r.pass, why: `NOT (${r.why})`, found: [] };
+        results.push(r);
+        if (all && !r.pass) { ok = false; break; }
+        if (!all && r.pass) { ok = true; break; }
+    }
+    const why = ok
+        ? (all ? results.map(r => r.why).join('; ') : results.find(r => r.pass).why)
+        : results.map(r => r.why).join('; ');
+    // The words that made it match, for a "Forward result" wire.
+    const matched = ok ? [...new Set(results.filter(r => r.pass).flatMap(r => r.found ?? []))] : [];
+    return { pass: ok, why, matched };
+}
+
+/**
+ * Pick a Decider's outputs. No model is involved unless a rule asks one, or
+ * the routing mode is "AI sorts".
+ *
+ *  - all:    every output whose rules match fires
+ *  - first:  outputs are checked top to bottom, the first match wins
+ *  - random: a weighted pick
+ *  - ai:     one model call reads the text and picks the outputs that apply
+ *
+ * "Otherwise" fires when nothing else does.
  *
  * @param {object} node      the Decider
  * @param {object} live      gathered context
- * @param {string} incoming  the text wired into it
- * @returns {{key: string, name: string, why: string, fallback: boolean}}
+ * @param {string} incoming  all the text wired into it
+ * @param {object} [extra]   { inputs: {wireId: text}, ai, aiKey, exclude, random }
  */
 export function evaluateDecider(node, live, incoming, extra = {}) {
     const fb = node.fallback ?? { id: 'fallback', name: 'Otherwise' };
@@ -332,43 +486,91 @@ export function evaluateDecider(node, live, incoming, extra = {}) {
     // has to choose something else.
     const gone = extra.exclude ?? null;
     const keys = (node.keys ?? []).filter(k => k && !gone?.has(k.id));
-    const pick = (k, why, fallback = false) => ({ key: k.id, name: k.name || 'key', why, fallback });
+    const decide = (ks, why, fallback = false, matched = []) => ({
+        keys: ks.map(k => k.id),
+        key: ks[0]?.id ?? null,
+        names: ks.map(k => k.name || 'output'),
+        name: ks.map(k => k.name || 'output').join(' + ') || 'nothing',
+        why, fallback, matched,
+    });
+    const otherwise = (why) => gone?.has(fb.id) ? decide([], why) : decide([fb], why, true);
 
-    if (node.enabled === false) return pick(fb, 'switched off, so it takes the fallback path', true);
+    if (node.enabled === false) return otherwise('switched off, so it takes the Otherwise path');
 
-    if (node.mode === 'random') {
+    const mode = routingMode(node);
+    if (!mode) return { ...decide([], 'not set up yet: choose how it routes'), unset: true };
+
+    if (mode === 'random') {
         const all = [...keys, ...(gone?.has(fb.id) ? [] : [fb])].map(k => ({ k, w: Math.max(0, Number(k.weight ?? 1)) }));
         const total = all.reduce((n, x) => n + x.w, 0);
-        if (total <= 0) return pick(fb, 'every weight is zero', true);
+        if (total <= 0) return otherwise('every weight is zero');
         let roll = (extra.random ?? Math.random)() * total;
         for (const { k, w } of all) {
-            if ((roll -= w) < 0) return pick(k, `weighted pick: ${Math.round(100 * w / total)}% chance`, k === fb);
+            if ((roll -= w) < 0) return decide([k], `weighted pick: ${Math.round(100 * w / total)}% chance`, k === fb);
         }
-        return pick(fb, 'weighted pick', true);
+        return otherwise('weighted pick');
     }
 
-    for (const k of keys) {
-        const rules = (k.conditions ?? []).filter(c => c && !emptyRule(c));
-        if (!rules.length) continue;
-        const all = k.match === 'all';
-        // Checked in order and stopped as soon as the answer is known, so an
-        // AI rule is only ever asked when nothing before it has settled things.
-        const results = [];
-        let ok = all;
-        for (const c of rules) {
-            const r = evaluateRule(c, live, { ...extra, incoming });
-            if (r.needsAi) return { needs: c, key: null };
-            results.push(r);
-            if (all && !r.pass) { ok = false; break; }
-            if (!all && r.pass) { ok = true; break; }
-        }
-        if (!ok) continue;
-        const why = all
-            ? results.map(r => r.why).join('; ')
-            : results.find(r => r.pass).why;
-        return pick(k, why);
+    if (mode === 'ai') {
+        if (!keys.length) return otherwise('it has no outputs yet');
+        const a = extra.ai?.[`${node.id}|sorter`];
+        if (!a) return { needs: { mode: 'sorter' }, incoming, key: null };
+        const chosen = keys.filter(k => (a.keys ?? []).includes(k.id));
+        if (!chosen.length) return otherwise(a.why || 'the AI picked none of the outputs');
+        return decide(chosen, a.why || 'the AI picked it');
     }
-    return pick(fb, keys.length ? 'no key matched' : 'it has no keys yet', true);
+
+    if (mode === 'first') {
+        for (const k of keys) {
+            const r = checkKey(k, live, incoming, extra);
+            if (r.needs) return { needs: r.needs, incoming: r.incoming, key: null };
+            if (r.pass) return decide([k], r.why, false, r.matched);
+        }
+        return otherwise(keys.length ? 'nothing matched' : 'it has no outputs yet');
+    }
+
+    // mode === 'all': every output that matches fires.
+    const hits = [];
+    const whys = [];
+    const matched = [];
+    for (const k of keys) {
+        const r = checkKey(k, live, incoming, extra);
+        if (r.needs) return { needs: r.needs, incoming: r.incoming, key: null };
+        if (r.pass) { hits.push(k); whys.push(`${k.name || 'output'}: ${r.why}`); matched.push(...r.matched); }
+    }
+    if (!hits.length) return otherwise(keys.length ? 'nothing matched' : 'it has no outputs yet');
+    return decide(hits, whys.join(' · '), false, [...new Set(matched)]);
+}
+
+/**
+ * Test a Decider against some sample text, output by output, for the test
+ * box. Nothing is sent: AI rules and the AI sorter are reported as not asked.
+ * @returns {Array<{id:string|null, name:string, pass:boolean|null, why:string}>}
+ */
+export function explainDecider(node, live, incoming) {
+    const mode = routingMode(node);
+    const fb = node.fallback ?? { id: 'fallback', name: 'Otherwise' };
+    const rows = [];
+    if (!mode) return [{ id: null, name: 'Not set up', pass: null, why: 'choose how it routes first' }];
+    if (mode === 'random') {
+        const all = [...(node.keys ?? []), fb];
+        const total = all.reduce((n, k) => n + Math.max(0, Number(k.weight ?? 1)), 0) || 1;
+        return all.map(k => ({ id: k.id, name: k.name || 'output', pass: null, why: `${Math.round(100 * Math.max(0, Number(k.weight ?? 1)) / total)}% chance` }));
+    }
+    if (mode === 'ai') {
+        return [...(node.keys ?? []).map(k => ({ id: k.id, name: k.name || 'output', pass: null, why: 'the AI decides at send time' })),
+            { id: fb.id, name: fb.name || 'Otherwise', pass: null, why: 'if the AI picks none' }];
+    }
+    let any = false;
+    for (const k of node.keys ?? []) {
+        if (mode === 'first' && any) { rows.push({ id: k.id, name: k.name || 'output', pass: false, why: 'not checked: an output above already matched' }); continue; }
+        const r = checkKey(k, live, incoming, {});
+        if (r.needs) { rows.push({ id: k.id, name: k.name || 'output', pass: null, why: 'needs the AI, which the test box does not ask' }); continue; }
+        rows.push({ id: k.id, name: k.name || 'output', pass: r.pass, why: r.why });
+        if (r.pass) any = true;
+    }
+    rows.push({ id: fb.id, name: fb.name || 'Otherwise', pass: !any, why: any ? 'something else matched' : 'nothing else matched' });
+    return rows;
 }
 
 /* ------------------------------------------------------------------ */
@@ -410,10 +612,15 @@ function historyWindow(node, live) {
 }
 
 function historyMessages(node, live) {
+    const all = live.chat ?? [];
     return historyWindow(node, live).map(m => ({
         role: m.is_user ? 'user' : 'assistant',
         content: String(m.mes ?? ''),
         ...(m.name ? { name: String(m.name).replace(/[^a-zA-Z0-9_-]/g, '_') } : {}),
+        // For a wire's "Send what?" filter: SillyTavern's message number and
+        // the speaker's real name. Stripped before anything is sent.
+        __idx: all.indexOf(m),
+        __speaker: String(m.name ?? (m.is_user ? live.name1 : live.name2) ?? ''),
     }));
 }
 
@@ -528,6 +735,14 @@ export function resolveNode(node, live) {
                 warnings,
             };
 
+        case NODE_TYPES.LOREBOOK: {
+            // On its own (a per-block preview): no wired text to scan.
+            const picked = selectLore(node, live, '');
+            if (picked.missing.length) warnings.push(`"${node.title}": lorebook ${picked.missing.map(m => `"${m}"`).join(', ')} could not be read.`);
+            if (!picked.books.length) warnings.push(`"${node.title}" reads no lorebooks: this chat, character and persona have none, and none is chosen.`);
+            return { messages: loreMessages(node, live, picked.entries), warnings };
+        }
+
         case NODE_TYPES.INJECTION: {
             const out = [];
             const wanted = Array.isArray(node.sources) ? node.sources : [];
@@ -554,6 +769,74 @@ export function resolveNode(node, live) {
     }
 }
 
+
+/* ------------------------------------------------------------------ */
+/* wire modes                                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * What travels along a wire.
+ *  - send:     the text (the default, and how every wire worked before)
+ *  - activate: nothing. The block it points at only runs when at least one of
+ *              its Activate wires fires; it then uses its own content.
+ *  - result:   a Decider's decision — the output's name, or the words that
+ *              matched — as text. `{{result}}` in the target's text is
+ *              replaced with it; otherwise it is added like any wired text.
+ */
+export const WIRE_MODES = Object.freeze({ SEND: 'send', ACTIVATE: 'activate', RESULT: 'result' });
+export const wireMode = (w) => (w?.mode === 'activate' || w?.mode === 'result') ? w.mode : 'send';
+
+/**
+ * Whether a block is switched on by its Activate wires. A block with no
+ * Activate wires is always on. An Activate wire fires when the block it comes
+ * from is itself on: switched on, on a path that was taken, its condition
+ * passing — and, from a Decider, when that output is the one chosen.
+ *
+ * @param {Record<string,string>} choice  Decider id -> chosen key. A Decider
+ *        missing from it has not decided yet, and is assumed to fire.
+ * @param {Set<string>} cut   blocks on paths a Decider did not take
+ * @param {(node:object)=>{pass:boolean}} condOf  the block's own condition
+ * @returns {(id:string)=>{on:boolean, why:string}}
+ */
+export function activationGate(graph, choice, cut, condOf) {
+    const memo = new Map();
+    const busy = new Set();
+    const gate = (id) => {
+        if (memo.has(id)) return memo.get(id);
+        if (busy.has(id)) return { on: true, why: '' };
+        busy.add(id);
+        const wires = wiresInto(graph, id).filter(w => wireMode(w) === 'activate');
+        let r = { on: true, why: '' };
+        if (wires.length) {
+            const hit = wires.find(fires);
+            r = hit
+                ? { on: true, why: `activated by "${graph.nodes[hit.from]?.title ?? '?'}"` }
+                : { on: false, why: 'not activated: none of its Activate wires fired' };
+        }
+        busy.delete(id);
+        memo.set(id, r);
+        return r;
+    };
+    const fires = (w) => {
+        const src = graph.nodes[w.from];
+        if (!src || src.enabled === false || cut.has(src.id)) return false;
+        if (src.type === NODE_TYPES.DECIDER) {
+            const k = choice[src.id];
+            if (Array.isArray(k) && !k.includes(w.port)) return false;
+        } else if (!condOf(src).pass) {
+            return false;
+        }
+        return gate(src.id).on;
+    };
+    return gate;
+}
+
+/** The text a "Forward result" wire carries from its Decider. */
+function resultText(decision, wire) {
+    if (!decision) return '';
+    if (wire.result === 'matched' && decision.matched?.length) return decision.matched.join(', ');
+    return (decision.names ?? [decision.name]).filter(Boolean).join(', ');
+}
 
 /* ------------------------------------------------------------------ */
 /* the walk                                                            */
@@ -603,8 +886,11 @@ function generateOutput(node, results, live) {
  * @param {Record<string,string>} results  answers from Generate blocks already run
  * @returns {{messages: Array, warnings: Array<string>, trace: Array, pending: Array<string>}}
  */
-export function collect(graph, targetId, live, results = {}, decisions = {}) {
+export function collect(graph, targetId, live, results = {}, decisions = {}, { raw = false } = {}) {
+    live = liveFor(graph, live);
     const warnings = [];
+    /** The entries each Lorebook block sent, for its trace and Forward result wires. */
+    const fired = new Map();
     const trace = [];
     const pending = [];
     const memo = new Map();
@@ -626,18 +912,28 @@ export function collect(graph, targetId, live, results = {}, decisions = {}) {
     const provisional = {};
     for (const dec of upstreamDeciders(graph, targetId)) {
         const d = tryDecide(graph, dec, live, results, decisions);
-        if (d) { choice[dec.id] = d.key; continue; }
+        if (d) { choice[dec.id] = d.keys ?? [d.key]; continue; }
         provisional[dec.id] = {
+            keys: dec.fallback?.id ? [dec.fallback.id] : [],
+            names: [dec.fallback?.name || 'Otherwise'],
             key: dec.fallback?.id,
             name: dec.fallback?.name || 'Otherwise',
             why: 'decided at send time, once the text it reads has been written \u2014 this preview follows the fallback path',
             fallback: true,
             provisional: true,
         };
-        choice[dec.id] = provisional[dec.id].key;
+        choice[dec.id] = provisional[dec.id].keys;
     }
     const cut = cutNodes(graph, choice);
-    const decisionFor = (dec) => decisions[dec.id] ?? provisional[dec.id] ?? { key: dec.fallback?.id, name: dec.fallback?.name, why: '', fallback: true };
+    const decisionFor = (dec) => decisions[dec.id] ?? provisional[dec.id] ?? { keys: [dec.fallback?.id], key: dec.fallback?.id, name: dec.fallback?.name, why: '', fallback: true };
+    // One answer per block per walk, so a probability roll cannot say yes to
+    // the Activate check and no a moment later.
+    const conds = new Map();
+    const condOf = (n) => {
+        if (!conds.has(n.id)) conds.set(n.id, n.enabled === false ? { pass: false, why: 'switched off' } : evaluateCondition(n, live));
+        return conds.get(n.id);
+    };
+    const gate = activationGate(graph, choice, cut, condOf);
 
     function contribute(nodeId, isTarget = false) {
         if (memo.has(nodeId)) {
@@ -654,7 +950,16 @@ export function collect(graph, targetId, live, results = {}, decisions = {}) {
         }
 
         const off = node.enabled === false;
-        const cond = off ? { pass: false, why: 'switched off' } : evaluateCondition(node, live);
+        const cond = condOf(node);
+
+        if (!isTarget && !off) {
+            const g = gate(nodeId);
+            if (!g.on) {
+                trace.push({ id: nodeId, title: node.title, status: 'skipped', why: g.why });
+                memo.set(nodeId, []);
+                return [];
+            }
+        }
 
         // A Generate block is a barrier. Unless it IS the thing we are
         // assembling a prompt for, its own inputs stay on its side of the wall
@@ -684,8 +989,27 @@ export function collect(graph, targetId, live, results = {}, decisions = {}) {
             .filter(x => !!x.src)
             // A Decider's paths not taken contribute nothing.
             .filter(x => !cut.has(x.src.id))
-            .filter(x => x.src.type !== NODE_TYPES.DECIDER || decisionFor(x.src).key === x.wire.port)
+            .filter(x => x.src.type !== NODE_TYPES.DECIDER || picks(decisionFor(x.src), x.wire.port))
+            // Activate wires carry nothing; they only switched this block on.
+            .filter(x => wireMode(x.wire) !== 'activate')
             .sort((a, b) => byY(a.src, b.src));
+
+        // "Forward result" wires from a Decider carry its decision. If this
+        // block's text has {{result}} in it, the decision goes there;
+        // otherwise it is added like any other wired text.
+        const resultWires = wiresInto(graph, nodeId).filter(w => wireMode(w) === 'result' && isResultSource(graph.nodes[w.from]));
+        const macro = /\{\{result\}\}/i;
+        const hasMacro = resultWires.length > 0 && [node.content, node.override?.content].some(t => typeof t === 'string' && macro.test(t));
+        let viewNode = node;
+        if (hasMacro) {
+            const valueList = incoming
+                .filter(x => wireMode(x.wire) === 'result' && isResultSource(x.src))
+                .map(x => resultFor(x.src, x.wire))
+                .filter(Boolean);
+            const values = [...new Set(valueList)].join(', ');
+            const fill = (t) => typeof t === 'string' ? t.replace(/\{\{result\}\}/gi, values) : t;
+            viewNode = { ...node, content: fill(node.content), ...(node.override ? { override: { ...node.override, content: fill(node.override.content) } } : {}) };
+        }
 
         // The trace entry for this block is written only after its inputs have
         // been walked, so the trace reads in the order the prompt is sent:
@@ -695,7 +1019,8 @@ export function collect(graph, targetId, live, results = {}, decisions = {}) {
         if (!cond.pass) {
             entry = { id: nodeId, title: node.title, status: off ? 'off' : 'skipped', why: cond.why };
         } else {
-            const res = resolveNode(node, live);
+            // A Lorebook block is resolved below, once its wired text is known.
+            const res = node.type === NODE_TYPES.LOREBOOK ? { messages: [], warnings: [] } : resolveNode(viewNode, live);
             own = res.messages;
             warnings.push(...res.warnings);
             if (node.type === NODE_TYPES.DECIDER && !isTarget) {
@@ -705,7 +1030,8 @@ export function collect(graph, targetId, live, results = {}, decisions = {}) {
                     title: node.title,
                     status: d.provisional ? 'pending' : 'in',
                     why: `\u2192 ${d.name}: ${d.why}`,
-                    decision: d.key,
+                    decision: d.keys ?? [d.key],
+                    unset: !!d.unset,
                     chars: 0,
                 };
             } else if (node.type !== NODE_TYPES.OUTPUT && node.type !== NODE_TYPES.NOTE && node.type !== NODE_TYPES.GENERATE && node.type !== NODE_TYPES.DECIDER) {
@@ -713,7 +1039,7 @@ export function collect(graph, targetId, live, results = {}, decisions = {}) {
                     id: nodeId,
                     title: node.title,
                     status: own.length ? 'in' : 'empty',
-                    why: cond.why,
+                    why: (!isTarget && gate(nodeId).why) || cond.why,
                     chars: textOf(own).length,
                 };
             }
@@ -726,12 +1052,41 @@ export function collect(graph, targetId, live, results = {}, decisions = {}) {
         const prependText = [];
 
         for (const { wire, src } of incoming) {
-            const up = contribute(src.id);
+            // The wire's "Send what?" filter decides which part of the
+            // upstream block actually crosses it.
+            let up;
+            if (wireMode(wire) === 'result' && isResultSource(src)) {
+                contribute(src.id);            // for its trace entry; the result is sent instead of its text
+                if (hasMacro) continue;         // already placed into {{result}}
+                const text = resultFor(src, wire);
+                up = text ? [{ role: node.role || 'system', content: text, __y: src.y }] : [];
+            } else {
+                up = applySelect(contribute(src.id), wire.select, live);
+            }
             if (!up.length) continue;
             switch (wire.kind) {
                 case WIRE_KINDS.APPEND: appendText.push(textOf(up)); break;
                 case WIRE_KINDS.PREPEND: prependText.push(textOf(up)); break;
                 default: before.push(...up); break;
+            }
+        }
+
+        // A Lorebook block reads what is wired into it (to scan for keys);
+        // that text stops here, like a Generate block's question.
+        if (node.type === NODE_TYPES.LOREBOOK && cond.pass) {
+            const scan = [...prependText, textOf(before), ...appendText].filter(Boolean).join('\n\n');
+            before.length = 0; appendText.length = 0; prependText.length = 0;
+            const picked = selectLore(viewNode, live, scan);
+            fired.set(nodeId, picked.entries);
+            own = loreMessages(viewNode, live, picked.entries);
+            if (picked.missing.length) warnings.push(`"${node.title}": lorebook ${picked.missing.map(m => `"${m}"`).join(', ')} could not be read.`);
+            if (!picked.books.length) warnings.push(`"${node.title}" reads no lorebooks: this chat, character and persona have none, and none is chosen.`);
+            if (entry) {
+                const names = picked.entries.map(e => e.title || `#${e.uid}`);
+                entry.status = own.length ? 'in' : 'empty';
+                entry.chars = textOf(own).length;
+                entry.why = `${names.length} entr${names.length === 1 ? 'y' : 'ies'}${picked.estimated ? ' (estimated)' : ''}${names.length ? `: ${names.slice(0, 6).join(', ')}${names.length > 6 ? ` +${names.length - 6}` : ''}` : ''}`;
+                entry.lore = picked.entries.map(e => ({ title: e.title, book: e.book, why: e.why }));
             }
         }
 
@@ -787,7 +1142,7 @@ export function collect(graph, targetId, live, results = {}, decisions = {}) {
 
     const messages = contribute(targetId, true)
         .filter(m => m && typeof m.content === 'string' && m.content.trim().length)
-        .map(m => ({ role: m.role || 'system', content: m.content, ...(m.name ? { name: m.name } : {}) }));
+        .map(m => raw ? m : ({ role: m.role || 'system', content: m.content, ...(m.name ? { name: m.name } : {}) }));
 
     // The trace reads in the same order as the prompt.
     const tk = (t) => keyOf.get(t.id) ?? graph.nodes[t.id]?.y ?? 0;
@@ -800,7 +1155,43 @@ export function collect(graph, targetId, live, results = {}, decisions = {}) {
         warnings.push(`"${n.title}" reaches Output down ${times} different paths, so its text is sent ${times} times. That is your wiring, not something injecting it.`);
     }
 
-    return { messages, warnings, trace, pending };
+    return { messages, warnings, trace, pending, fired: Object.fromEntries(fired) };
+
+    function isResultSource(src) {
+        return src?.type === NODE_TYPES.DECIDER || src?.type === NODE_TYPES.LOREBOOK;
+    }
+    /** What a Forward result wire carries: a Decider's decision, or the entries a Lorebook sent. */
+    function resultFor(src, wire) {
+        if (src.type === NODE_TYPES.LOREBOOK) {
+            contribute(src.id);
+            return (fired.get(src.id) ?? []).map(e => e.title || `#${e.uid}`).join(', ');
+        }
+        return resultText(decisionFor(src), wire);
+    }
+}
+
+/**
+ * What one wire carries right now, after its "Send what?" filter. For the
+ * inspector's preview; a Generate block that has not run shows a placeholder.
+ * @returns {Array<{role:string, content:string}>}
+ */
+export function wirePreview(graph, wire, live, results = {}) {
+    const src = graph.nodes[wire?.from];
+    if (!src) return [];
+    let msgs;
+    if (src.type === NODE_TYPES.GENERATE) {
+        msgs = generateOutput(src, results, live);
+    } else if (wireMode(wire) === 'result' && src.type === NODE_TYPES.LOREBOOK) {
+        const fired = collect(graph, src.id, live, results).fired?.[src.id] ?? [];
+        const text = fired.map(e => e.title || `#${e.uid}`).join(', ');
+        return text ? [{ role: 'system', content: text }] : [];
+    } else {
+        // Walk the source as if it were the target, keeping the chat numbers
+        // the filter needs, then apply the filter.
+        const tmp = { ...graph, nodes: { ...graph.nodes }, wires: { ...graph.wires } };
+        msgs = collect(tmp, src.id, live, results, {}, { raw: true }).messages;
+    }
+    return applySelect(msgs, wire.select, live).map(m => ({ role: m.role || 'system', content: m.content }));
 }
 
 /**
@@ -813,21 +1204,46 @@ export function tryDecide(graph, dec, live, results = {}, decisions = {}) {
     // Rules that only look at the chat, the time or variables do not need the
     // incoming text, so they can decide before anything upstream has run.
     let incoming = '';
+    let inputs = null;
     if (readsIncoming(dec)) {
         const inner = collect(graph, dec.id, live, results, decisions);
         if (inner.pending.length) return null;
         incoming = textOf(inner.messages);
+        inputs = deciderInputs(graph, dec, live, results, decisions);
     }
-    const r = evaluateDecider(dec, live, incoming, { ai: live.aiAnswers ?? {}, aiKey: (c) => aiRuleKey(dec, c), exclude: live.excludedKeys?.[dec.id] ?? null });
+    const r = evaluateDecider(dec, live, incoming, { inputs, ai: live.aiAnswers ?? {}, aiKey: (c) => aiRuleKey(dec, c), exclude: live.excludedKeys?.[dec.id] ?? null });
     if (r.needs) {
-        // An AI rule has to be asked before this can be decided. The runner
-        // asks it and tries again; a preview never asks, so it stays open.
-        (live.aiWanted ??= new Map()).set(aiRuleKey(dec, r.needs), { dec, cond: r.needs, incoming });
+        // An AI rule (or the AI sorter) has to be asked before this can be
+        // decided. The runner asks it and tries again; a preview never asks,
+        // so it stays open.
+        const key = r.needs.mode === 'sorter' ? `${dec.id}|sorter` : aiRuleKey(dec, r.needs);
+        (live.aiWanted ??= new Map()).set(key, { dec, cond: r.needs, incoming: r.incoming ?? incoming });
         return null;
     }
     const d = { ...r, title: dec.title };
     decisions[dec.id] = d;
     return d;
+}
+
+/**
+ * The text arriving on each wire into a Decider, by wire id, so a rule can
+ * read one input on its own. Uses the same filters as the walk.
+ */
+export function deciderInputs(graph, dec, live, results = {}, decisions = {}) {
+    const out = {};
+    for (const w of wiresInto(graph, dec.id)) {
+        if (wireMode(w) === 'activate') continue;
+        out[w.id] = textOf(wirePreview(graph, w, live, results));
+    }
+    return out;
+}
+
+/** The blocks wired into a Decider, as its named inputs: [{wireId, title}]. */
+export function deciderInputList(graph, dec) {
+    return wiresInto(graph, dec.id)
+        .filter(w => wireMode(w) !== 'activate' && graph.nodes[w.from])
+        .map(w => ({ wireId: w.id, title: graph.nodes[w.from].title || 'Untitled', y: graph.nodes[w.from].y }))
+        .sort((a, b) => a.y - b.y);
 }
 
 /** A stable name for one AI rule's answer within one send. */
@@ -839,7 +1255,9 @@ export function aiRuleKey(dec, cond) {
 
 /** Whether any of a Decider's rules read the text wired into it. */
 export function readsIncoming(dec) {
-    if (dec.enabled === false || dec.mode === 'random') return false;
+    const mode = routingMode(dec);
+    if (dec.enabled === false || !mode || mode === 'random') return false;
+    if (mode === 'ai') return (dec.keys ?? []).length > 0;
     return (dec.keys ?? []).some(k => (k.conditions ?? []).some(c =>
         c && !emptyRule(c) && (
             ((c.mode === 'search' || c.mode === 'lacks') && c.scope === 'incoming')
@@ -859,18 +1277,39 @@ export function liveNodes(graph, live, results = {}, decisions = {}) {
     const choice = {};
     for (const dec of upstreamDeciders(graph, out.id)) {
         const d = tryDecide(graph, dec, live, results, decisions);
-        if (d) choice[dec.id] = d.key;
+        if (d) choice[dec.id] = d.keys ?? [d.key];
     }
     const cut = cutNodes(graph, choice);
+    // A probability roll is not known until the real walk, so assume it passes:
+    // better to run a block that ends up unused than to miss one that is used.
+    const gate = activationGate(graph, choice, cut, (n) => n.condition?.mode === 'probability' ? { pass: true } : evaluateCondition(n, live));
     const stack = [out.id];
+    // A block that only switches another on: follow its own Activate wires
+    // up to any Decider, because that Decider still has to be able to choose.
+    const gateSeen = new Set();
+    const switchOnly = (id) => {
+        if (gateSeen.has(id)) return;
+        gateSeen.add(id);
+        for (const w of wiresInto(graph, id)) {
+            if (wireMode(w) !== 'activate') continue;
+            const src = graph.nodes[w.from];
+            if (!src || cut.has(src.id)) continue;
+            if (src.type === NODE_TYPES.DECIDER) stack.push(src.id); else switchOnly(src.id);
+        }
+    };
     while (stack.length) {
         const id = stack.pop();
         if (seen.has(id)) continue;
+        if (id !== out.id && !gate(id).on) continue;
         seen.add(id);
         for (const w of wiresInto(graph, id)) {
             const src = graph.nodes[w.from];
             if (!src || cut.has(src.id)) continue;
-            if (src.type === NODE_TYPES.DECIDER && choice[src.id] !== undefined && choice[src.id] !== w.port) continue;
+            // What sits behind an Activate wire only has to be switched on,
+            // not run: its text is never used here. A Decider is the
+            // exception, since it has to read its inputs to choose.
+            if (wireMode(w) === 'activate' && src.type !== NODE_TYPES.DECIDER) { switchOnly(src.id); continue; }
+            if (src.type === NODE_TYPES.DECIDER && Array.isArray(choice[src.id]) && !choice[src.id].includes(w.port)) continue;
             stack.push(src.id);
         }
     }
@@ -918,9 +1357,10 @@ export function cutNodes(graph, choice) {
         return seen;
     };
     for (const [decId, key] of Object.entries(choice)) {
+        const chosen = Array.isArray(key) ? key : [key];
         const wires = wiresOutOf(graph, decId);
-        const taken = forward(wires.filter(w => w.port === key).map(w => w.to));
-        const not = forward(wires.filter(w => w.port !== key).map(w => w.to));
+        const taken = forward(wires.filter(w => chosen.includes(w.port)).map(w => w.to));
+        const not = forward(wires.filter(w => !chosen.includes(w.port)).map(w => w.to));
         for (const id of not) if (!taken.has(id) && id !== outId && id !== decId) cut.add(id);
     }
     return cut;
@@ -934,6 +1374,8 @@ export function generateDeps(graph, nodeId) {
     while (walk.length) {
         const id = walk.pop();
         for (const w of wiresInto(graph, id)) {
+            // Activate wires count too: a block switched on by a Decider has
+            // to wait until that Decider can choose.
             if (seen.has(w.from)) continue;
             seen.add(w.from);
             const src = graph.nodes[w.from];
@@ -1027,11 +1469,12 @@ export function emissionCounts(graph) {
         // text goes out as often as its busiest path, not the sum of them.
         const alt = self?.type === NODE_TYPES.DECIDER;
         for (const w of wiresOutOf(graph, nodeId)) {
+            if (wireMode(w) !== 'send') continue;
             const target = graph.nodes[w.to];
             if (!target) continue;
             // A Generate block is a barrier: what goes into it never travels on,
             // so a path that ends at one does not reach the prompt as this text.
-            if (target.type === NODE_TYPES.GENERATE) continue;
+            if (target.type === NODE_TYPES.GENERATE || target.type === NODE_TYPES.LOREBOOK) continue;
             const n = paths(w.to, new Set(seen));
             total = alt ? Math.max(total, n) : total + n;
         }
@@ -1087,14 +1530,20 @@ function deciderWarnings(graph) {
         if (node.type !== NODE_TYPES.DECIDER || node.enabled === false) continue;
         // Loop wires count: a key that goes back up is wired.
         const wired = new Set(Object.values(graph.wires).filter(w => w.from === node.id && w.kind !== WIRE_KINDS.TOGETHER).map(w => w.port));
-        const fb = node.fallback;
-        if (fb && !wired.has(fb.id)) {
-            out.push(`"${node.title}": the "${fb.name || 'Otherwise'}" path is not wired, so when no key matches, nothing below this Decider is sent.`);
+        // "Otherwise" may be left unwired on purpose: then nothing below
+        // this Decider is sent when nothing matches.
+        const mode = routingMode(node);
+        if (!mode) {
+            out.push(`"${node.title}" is not set up yet: choose how it routes. Until then nothing below it is sent.`);
+            continue;
         }
         for (const k of node.keys ?? []) {
-            if (!wired.has(k.id)) out.push(`"${node.title}": key "${k.name}" is not wired to anything, so choosing it sends nothing below this Decider.`);
-            if (node.mode !== 'random' && !(k.conditions ?? []).some(c => c && !emptyRule(c))) {
-                out.push(`"${node.title}": key "${k.name}" has no rules yet, so it is never chosen.`);
+            if (!wired.has(k.id)) out.push(`"${node.title}": output "${k.name}" is not wired to anything, so choosing it sends nothing below this Decider.`);
+            if ((mode === 'all' || mode === 'first') && !(k.conditions ?? []).some(c => c && !emptyRule(c))) {
+                out.push(`"${node.title}": output "${k.name}" has no rules yet, so it never fires.`);
+            }
+            if (mode === 'ai' && !String(k.description ?? '').trim()) {
+                out.push(`"${node.title}": output "${k.name}" has no description, so the AI only has its name to go on.`);
             }
         }
     }
@@ -1238,7 +1687,7 @@ export async function compile(graph, { dryRun = false, live = null, results = {}
     const hidden = Object.entries(decisions)
         .filter(([id]) => !inTrace.has(id) && alive.has(id) && graph.nodes[id])
         .sort(([a], [b]) => byY(graph.nodes[a], graph.nodes[b]))
-        .map(([id, d]) => ({ id, title: graph.nodes[id].title, status: 'in', why: `\u2192 ${d.name}: ${d.why}`, decision: d.key, chars: 0 }));
+        .map(([id, d]) => ({ id, title: graph.nodes[id].title, status: 'in', why: `\u2192 ${d.name}: ${d.why}`, decision: d.keys ?? [d.key], chars: 0 }));
     built.trace.unshift(...hidden);
     warnings.push(...built.warnings);
     warnings.push(...strandedWarnings(graph));

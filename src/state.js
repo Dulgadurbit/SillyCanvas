@@ -49,16 +49,23 @@ export const NODE_TYPES = {
      * port only. Paths not taken contribute nothing and cost nothing.
      */
     DECIDER: 'decider',
+    /**
+     * Lorebook entries (World Info), read straight from the lorebooks, so the
+     * canvas decides which are sent and where. What is wired into it is text
+     * to scan for keys, and stops there.
+     */
+    LOREBOOK: 'lorebook',
 };
 
-/** A fresh key for a Decider. */
-export function newDeciderKey(name = 'KEY') {
+/** A fresh output for a Decider, with one empty word rule to fill in. */
+export function newDeciderKey(name = 'Output') {
     return {
         id: uid('k'),
         name,
         match: 'any',
         conditions: [{ mode: 'search', scope: 'incoming', terms: '', matchMode: 'any' }],
         weight: 1,
+        description: '',
     };
 }
 
@@ -310,6 +317,36 @@ export function defaultNode(type, x, y) {
                 prefix: '',
                 suffix: '',
             };
+        case NODE_TYPES.LOREBOOK:
+            return {
+                ...base,
+                title: 'Lorebook',
+                w: 280,
+                role: 'system',
+                /** Which lorebooks: the ones SillyTavern links, plus any named in `books`. */
+                sources: { chat: true, character: true, persona: false, global: false },
+                books: [],
+                /** 'st' as SillyTavern would · 'scan' keys in the wired text or chat · 'all' · 'constant' · 'picked' */
+                mode: 'st',
+                scanFrom: 'inputs',   // 'inputs' | 'chat'
+                scanDepth: 4,
+                includeConstant: true,
+                picked: [],           // "book|uid"
+                titleFilter: '',
+                group: '',
+                position: 'any',
+                memoryOnly: false,    // only entries written by the Memory Books extension
+                skipRecent: 0,
+                includeDisabled: false,
+                maxEntries: 0,
+                tokenBudget: 0,
+                order: 'order',       // 'order' | 'recent' | 'alpha'
+                titles: false,
+                separate: false,
+                prefix: '',
+                suffix: '',
+                excludeFromWI: false,
+            };
         case NODE_TYPES.INJECTION:
             return { ...base, title: 'Injections', sources: ['worldInfoBefore', 'worldInfoAfter', 'authorsNote'], w: 240 };
         case NODE_TYPES.GENERATE:
@@ -323,7 +360,7 @@ export function defaultNode(type, x, y) {
                 contentPosition: 'after',
                 /** Overrides the model the connection profile would use. */
                 model: null,
-                maxTokens: 700,
+                maxTokens: 2000,
                 /**
                  * Reasoning models spend their token budget thinking before
                  * they write, and that thinking comes out of the same
@@ -352,9 +389,14 @@ export function defaultNode(type, x, y) {
                 ...base,
                 title: 'Decider',
                 w: 280,
-                /** 'rules': first key whose conditions match. 'random': weighted pick. */
-                mode: 'rules',
-                keys: [newDeciderKey('MATCH')],
+                /**
+                 * How it routes: 'all' (every output that matches), 'first'
+                 * (the first match), 'random' (weighted) or 'ai' (one model
+                 * call picks). null until you choose: a new Decider does
+                 * nothing by accident.
+                 */
+                mode: null,
+                keys: [],
                 fallback: { id: uid('k'), name: 'Otherwise', weight: 1 },
                 showInChat: true,
             };
@@ -369,6 +411,32 @@ export function addNode(graph, type, x, y) {
     graph.nodes[node.id] = node;
     touchGraph(graph);
     return node;
+}
+
+/**
+ * A copy of a block, placed just below and to the right of it. Its wires are
+ * not copied: a copy that silently fed the same places would send its text
+ * twice. There is only ever one Output, so it cannot be copied.
+ * @param {{withInputs?: boolean}} [opts] also copy the wires coming into it
+ */
+export function duplicateNode(graph, nodeId, { withInputs = false } = {}) {
+    const src = graph.nodes[nodeId];
+    if (!src || src.type === NODE_TYPES.OUTPUT) return null;
+    const copy = structuredClone(src);
+    copy.id = uid(src.type);
+    copy.x = (src.x ?? 0) + 40;
+    copy.y = (src.y ?? 0) + 40;
+    copy.title = `${src.title || 'Untitled'} copy`;
+    graph.nodes[copy.id] = copy;
+    if (withInputs) {
+        for (const w of Object.values(graph.wires)) {
+            if (w.to !== nodeId || w.kind === WIRE_KINDS.TOGETHER || w.loop) continue;
+            const nw = { ...structuredClone(w), id: uid('w'), to: copy.id };
+            graph.wires[nw.id] = nw;
+        }
+    }
+    touchGraph(graph);
+    return copy;
 }
 
 export function removeNode(graph, nodeId) {
@@ -407,7 +475,7 @@ export function connect(graph, fromId, toId, kind = WIRE_KINDS.APPEND, { port = 
     const src = graph.nodes[fromId];
     if (src.type === NODE_TYPES.DECIDER) {
         const key = deciderKeys(src).find(k => k.id === port);
-        if (!key) return { ok: false, reason: 'Drag from one of the Decider\u2019s keys, so it knows which path this is.' };
+        if (!key) return { ok: false, reason: 'Drag from one of the Decider\u2019s outputs, so it knows which path this is.' };
     } else {
         port = null;
     }

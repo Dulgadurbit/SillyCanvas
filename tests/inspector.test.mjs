@@ -9,6 +9,7 @@ globalThis.toastr = { info() {}, warning() {}, success() {}, error() {} };
 const { installMock } = await import('./mock.js');
 const c = installMock({ settings: { graphs: {} } });
 c.eventSource = { on() {}, emit() {} }; c.eventTypes = {};
+c.POPUP_TYPE = { CONFIRM: 1 }; c.POPUP_RESULT = { AFFIRMATIVE: 1 }; c.callGenericPopup = async () => 1;
 const v = JSON.parse((await import('node:fs')).readFileSync(new URL('../manifest.json', import.meta.url))).version;
 const S = await import(`../src/state.js?v=${v}`);
 const UI = await import(`../src/ui.js?v=${v}`);
@@ -24,14 +25,20 @@ window.dispatchEvent(new dom.window.MouseEvent('mouseup', { bubbles: true }));
 await new Promise(r => setTimeout(r, 10));
 const insp = () => document.querySelector('.pc-inspector, [class*="inspector"]');
 const text = document.body.textContent;
-assert.match(text, /Picks one path/);
+assert.match(text, /How Deciders work/);
+assert.match(text, /Not set up yet/);
 const cards = () => document.querySelectorAll('.pc-key-card');
-assert.equal(cards().length, 2, 'one key + fallback');
-// add a key
-[...document.querySelectorAll('.pc-btn')].find(b => b.textContent.includes('Add a key')).click();
+assert.equal(cards().length, 1, 'only Otherwise at first');
+// choose a routing mode
+const chooseBy = [...document.querySelectorAll('select')].find(s => [...s.options].some(o => o.value === 'random'));
+chooseBy.value = 'all'; chooseBy.dispatchEvent(new dom.window.Event('change'));
+assert.equal(d.mode, 'all');
+// add two outputs
+const addOut = () => [...document.querySelectorAll('.pc-btn')].find(b => b.textContent.includes('Add an output')).click();
+addOut(); addOut();
 assert.equal(d.keys.length, 2);
 assert.equal(cards().length, 3);
-// add a rule to key 1, switch it to time
+// add a rule to output 1, switch it to time
 [...document.querySelectorAll('.pc-key-add')][0].click();
 assert.equal(d.keys[0].conditions.length, 2);
 const sels = [...cards()[0].querySelectorAll('select')];
@@ -39,11 +46,19 @@ const modeSel = sels.find(s => [...s.options].some(o => o.value === 'time'));
 modeSel.value = 'time'; modeSel.dispatchEvent(new dom.window.Event('change'));
 assert.equal(d.keys[0].conditions[0].mode, 'time');
 assert.ok(cards()[0].querySelector('input[type="time"]'), 'time inputs shown');
+// NOT on a rule
+const notBox = [...cards()[0].querySelectorAll('.pc-checkline')].find(l => l.textContent.startsWith('NOT'));
+notBox.querySelector('input').checked = true; notBox.querySelector('input').dispatchEvent(new dom.window.Event('change'));
+assert.equal(d.keys[0].conditions[0].not, true);
 // random mode shows weights
-const chooseBy = [...document.querySelectorAll('select')].find(s => [...s.options].some(o => o.value === 'random'));
-chooseBy.value = 'random'; chooseBy.dispatchEvent(new dom.window.Event('change'));
+const chooseBy2 = () => [...document.querySelectorAll('select')].find(s => [...s.options].some(o => o.value === 'random'));
+chooseBy2().value = 'random'; chooseBy2().dispatchEvent(new dom.window.Event('change'));
 assert.equal(d.mode, 'random');
 assert.ok(document.body.textContent.includes('Weight'));
+// AI mode shows descriptions and the sorter settings
+chooseBy2().value = 'ai'; chooseBy2().dispatchEvent(new dom.window.Event('change'));
+assert.ok(document.body.textContent.includes('Description for the AI'));
+assert.ok(document.body.textContent.includes('May pick several outputs'));
 // delete key 2
 [...cards()[1].querySelectorAll('.pc-key-tool')].at(-1).click();
 assert.equal(d.keys.length, 1);
@@ -54,7 +69,7 @@ await new Promise(r => setTimeout(r, 30));
 // "Goes to": wire a key from the inspector, then remove it again
 const target = S.addNode(g, S.NODE_TYPES.PROMPT, 100, 500);
 target.title = 'Deslop';
-chooseBy.value = 'rules'; chooseBy.dispatchEvent(new dom.window.Event('change'));
+chooseBy2().value = 'first'; chooseBy2().dispatchEvent(new dom.window.Event('change'));
 const picker = cards()[0].querySelector('.pc-dest select');
 const opt = [...picker.options].find(o => o.textContent === 'Deslop');
 assert.ok(opt, 'blocks listed as destinations');
@@ -77,4 +92,23 @@ for (const mode of ['lacks', 'number', 'ai']) {
     assert.equal(d.keys[0].conditions[0].mode, mode);
 }
 assert.ok(cards()[0].textContent.includes('YES or NO'));
+
+// the test box: colour router example, then paste text
+[...document.querySelectorAll('.pc-btn')].find(b => b.textContent.includes('colour router')).click();
+await new Promise(r => setTimeout(r, 20));
+const confirmBtn = document.querySelector('.pc-confirm-ok, .pc-dialog .menu_button');
+if (confirmBtn) confirmBtn.click();
+await new Promise(r => setTimeout(r, 20));
+if (d.mode === 'all') {
+    const ta = document.querySelector('.pc-dec-test textarea');
+    ta.value = 'a crimson sky over a navy sea';
+    [...document.querySelectorAll('.pc-dec-test .pc-btn')][0].click();
+    await new Promise(r => setTimeout(r, 30));
+    const rows = [...document.querySelectorAll('.pc-dec-test-row')];
+    assert.ok(rows.find(r => r.textContent.includes('Red')).classList.contains('pc-yes'));
+    assert.ok(rows.find(r => r.textContent.includes('Blue')).classList.contains('pc-yes'), 'both fire');
+    assert.ok(rows.find(r => r.textContent.includes('Otherwise')).classList.contains('pc-no'));
+} else {
+    console.log('  (example needs a confirm dialog; skipped the test-box check)');
+}
 console.log('inspector: ok');

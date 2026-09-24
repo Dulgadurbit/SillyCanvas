@@ -13,15 +13,17 @@ import {
     addNode, removeNode, outputNode, connect, disconnect, resolveGraph,
     chatBinding, setChatBinding, characterBinding, setCharacterBinding,
     exportGraph, importGraph, blankGraph, isFolderCollapsed, setFolderCollapsed, togetherGroup,
-    newDeciderKey, removeDeciderKey, onGraphTouched,
-} from './state.js?v=0.9.0';
-import { applyTheme } from './theme.js?v=0.9.0';
-import { renderThemeEditor } from './theme-editor.js?v=0.9.0';
-import * as H from './history.js?v=0.9.0';
-import * as L from './library.js?v=0.9.0';
-import { compile, gatherContext, resolveNode, textOf, generateLevels, emissionCounts } from './compile.js?v=0.9.0';
-import { run, profileName, effectiveModel, callCount, testBlock, shapeForApi, inspectProfile, modelsForSource, sourceForBlock, cachedModels, fetchModelList, previewBlock } from './run.js?v=0.9.0';
-import { Canvas, WIRE_LABEL, TYPE_LABEL } from './canvas.js?v=0.9.0';
+    newDeciderKey, removeDeciderKey, onGraphTouched, duplicateNode,
+} from './state.js?v=0.10.0';
+import { applyTheme } from './theme.js?v=0.10.0';
+import { renderThemeEditor } from './theme-editor.js?v=0.10.0';
+import * as H from './history.js?v=0.10.0';
+import * as L from './library.js?v=0.10.0';
+import { compile, gatherContext, resolveNode, textOf, generateLevels, emissionCounts, wirePreview, countTokens, routingMode, explainDecider, deciderInputList, collect } from './compile.js?v=0.10.0';
+import { LORE_POSITIONS } from './lore.js?v=0.10.0';
+import { DEFAULT_SELECT, isActive as selectActive, selectLabel } from './select.js?v=0.10.0';
+import { run, profileName, effectiveModel, callCount, testBlock, shapeForApi, inspectProfile, modelsForSource, sourceForBlock, cachedModels, fetchModelList, previewBlock } from './run.js?v=0.10.0';
+import { Canvas, WIRE_LABEL, TYPE_LABEL } from './canvas.js?v=0.10.0';
 
 let root = null;
 let canvas = null;
@@ -260,6 +262,12 @@ function build() {
             setTimeout(() => inspector.classList.remove('pc-flash'), 400);
         },
         onToast: (m) => toast(m, 'error'),
+        onHelp: (node) => {
+            guideOpen = true;
+            root.classList.remove('pc-hide-inspector');
+            syncPaneToggles();
+            canvas.select({ kind: 'node', id: node.id });
+        },
         onContextMenu: onCanvasMenu,
         onDrop: onCanvasDrop,
         onCreateAt: onCreateBlockAt,
@@ -284,6 +292,11 @@ function build() {
             const k = e.key.toLowerCase();
             if (k === 'z' && !e.shiftKey) { e.preventDefault(); doUndo(); return; }
             if ((k === 'z' && e.shiftKey) || k === 'y') { e.preventDefault(); doRedo(); return; }
+        }
+        if (mod && !typing && e.key.toLowerCase() === 'd' && selectedKind === 'node' && selected) {
+            e.preventDefault();
+            duplicateSelected(selected, e.shiftKey);
+            return;
         }
         if ((e.key === 'Delete' || e.key === 'Backspace') && !typing) {
             canvas.deleteSelection();
@@ -511,6 +524,7 @@ function renderSidebar() {
         [NODE_TYPES.DECIDER, 'fa-code-fork', 'Decider'],
         [NODE_TYPES.HISTORY, 'fa-clock-rotate-left', 'History'],
         [NODE_TYPES.INJECTION, 'fa-syringe', 'Injection'],
+        [NODE_TYPES.LOREBOOK, 'fa-book-atlas', 'Lorebook'],
         [NODE_TYPES.NOTE, 'fa-note-sticky', 'Note'],
     ]) {
         const b = el('div', 'pc-block-chip');
@@ -879,11 +893,42 @@ function renderWireInspector(box) {
         [WIRE_KINDS.PREPEND]: 'The upstream text is glued onto the front of this block’s text.',
     };
 
-    const sel = dropdown(Object.entries(WIRE_LABEL), wire.kind, (v) => {
-        canvas.setWireKind(wire.id, v);
-        renderInspector();
-    });
-    box.append(field('What this wire does', sel, explain[wire.kind]));
+    // What travels along it: the text, nothing (it only switches the block
+    // on), or a Decider's decision.
+    const fromDecider = from?.type === NODE_TYPES.DECIDER;
+    const fromLore = from?.type === NODE_TYPES.LOREBOOK;
+    const mode = wire.mode === 'activate' || (wire.mode === 'result' && (fromDecider || fromLore)) ? wire.mode : 'send';
+    const modes = [['send', 'Send the text'], ['activate', 'Only switch it on (Activate)']];
+    if (fromDecider) modes.push(['result', 'Send the decision (Forward result)']);
+    if (fromLore) modes.push(['result', 'Send the names of the entries that fired (Forward result)']);
+    const modeExplain = {
+        send: 'The text travels along the wire, as always.',
+        activate: `Nothing travels. "${to?.title ?? 'The block'}" only runs when at least one of its Activate wires fires, and then uses its own content.${fromDecider ? ' This one fires when this output is chosen.' : ` This one fires when "${from?.title ?? 'the block'}" is on.`}`,
+        result: fromLore
+            ? `Sends the titles of the entries this Lorebook sent, e.g. "Weapons, Tavern". Wire it into a Decider to route on which lore fired, or put {{result}} in "${to?.title ?? 'the block'}"\u2019s text.`
+            : `Sends what the Decider decided, as a short piece of text. Put {{result}} in "${to?.title ?? 'the block'}"\u2019s text to choose where it goes; otherwise it is added like any wired text.`,
+    };
+    box.append(field('What travels', dropdown(modes, mode, (v) => {
+        if (v === 'send') delete wire.mode; else wire.mode = v;
+        touch(); canvas.render(); renderInspector();
+    }), modeExplain[mode]));
+
+    if (mode === 'result' && fromDecider) {
+        box.append(field('Which result', dropdown([['name', 'The name of the chosen output'], ['matched', 'The words that matched']], wire.result === 'matched' ? 'matched' : 'name', (v) => {
+            if (v === 'name') delete wire.result; else wire.result = v;
+            touch(); canvas.render();
+        }), 'The matched words come from word rules; when there are none, the output\u2019s name is sent.'));
+    }
+
+    if (mode !== 'activate') {
+        const sel = dropdown(Object.entries(WIRE_LABEL), wire.kind, (v) => {
+            canvas.setWireKind(wire.id, v);
+            renderInspector();
+        });
+        box.append(field('How it joins', sel, explain[wire.kind]));
+    }
+
+    if (mode === 'send') renderSelectFields(box, wire);
 
     // Two Generate blocks can be tied instead of wired: that drops the text
     // flow between them and simply sends them at the same time.
@@ -937,6 +982,7 @@ function renderNodeInspector(box) {
     else if (node.type === NODE_TYPES.ST) renderStFields(box, node);
     else if (node.type === NODE_TYPES.HISTORY) renderHistoryFields(box, node);
     else if (node.type === NODE_TYPES.INJECTION) renderInjectionFields(box, node);
+    else if (node.type === NODE_TYPES.LOREBOOK) renderLoreFields(box, node);
     else if (node.type === NODE_TYPES.GENERATE) renderGenerateFields(box, node);
     else if (node.type === NODE_TYPES.DECIDER) renderDeciderFields(box, node);
     else if (node.type === NODE_TYPES.NOTE) {
@@ -956,6 +1002,13 @@ function renderNodeInspector(box) {
     }
 
     if (node.type !== NODE_TYPES.OUTPUT) {
+        const dup = el('div', 'pc-btn menu_button');
+        dup.innerHTML = '<i class="fa-solid fa-clone"></i> Duplicate';
+        dup.title = 'A copy without its wires (Ctrl+D). Ctrl+Shift+D also copies the wires coming in.';
+        dup.addEventListener('click', () => duplicateSelected(node, false));
+        const actions = el('div', 'pc-row pc-insp-actions');
+        actions.append(dup);
+        box.append(actions);
         const del = el('div', 'pc-btn menu_button pc-danger');
         del.innerHTML = '<i class="fa-solid fa-trash-can"></i> Delete this block';
         del.addEventListener('click', () => {
@@ -964,7 +1017,7 @@ function renderNodeInspector(box) {
             canvas.render();
             renderInspector();
         });
-        box.append(del);
+        actions.append(del);
     }
 }
 
@@ -1237,8 +1290,8 @@ function renderGenerateFields(box, node) {
 
     const max = el('input', 'text_pole');
     max.type = 'number'; max.min = '1';
-    max.value = node.maxTokens ?? 700;
-    max.addEventListener('input', () => { node.maxTokens = Number(max.value) || 700; touch(); canvas.render(); });
+    max.value = node.maxTokens ?? 2000;
+    max.addEventListener('input', () => { node.maxTokens = Number(max.value) || 2000; touch(); canvas.render(); });
     box.append(field('Longest reply (tokens)', max, 'Keep it tight. A pass that rambles costs you context in the real send.'));
 
     box.append(field('Let the model think first', dropdown([
@@ -1307,6 +1360,108 @@ function renderRepeatFields(box, node) {
     }
 }
 
+/**
+ * "Send what?": the wire's filter. Picks which messages, and which part of
+ * their text, actually cross this wire.
+ */
+function renderSelectFields(box, wire) {
+    const s = { ...DEFAULT_SELECT, ...(wire.select ?? {}) };
+    const wrap = el('div', 'pc-select-box');
+    box.append(wrap);
+
+    const head = el('div', 'pc-select-head');
+    head.append(el('span', 'pc-select-title', 'Send what?'));
+    const summary = el('span', 'pc-select-summary', selectLabel(wire.select) || 'everything');
+    head.append(summary);
+    wrap.append(head);
+
+    /** Save a change. `redraw` re-renders the inspector, for changes that show or hide fields. */
+    const set = (patch, redraw = false) => {
+        const next = { ...s, ...patch };
+        Object.assign(s, patch);
+        if (selectActive(next)) wire.select = next; else delete wire.select;
+        summary.textContent = selectLabel(wire.select) || 'everything';
+        touch();
+        canvas.render();
+        if (redraw) renderInspector();
+    };
+    const numberBox = (value, min, onInput) => {
+        const i = el('input', 'text_pole pc-select-num');
+        i.type = 'number'; i.min = String(min);
+        i.value = value;
+        i.addEventListener('input', () => onInput(Math.max(min, Math.round(Number(i.value) || 0))));
+        return i;
+    };
+    const row = (...kids) => { const r = el('div', 'pc-select-row'); r.append(...kids); return r; };
+
+    // --- messages ---
+    wrap.append(el('div', 'pc-select-sub', 'Messages'));
+    const count = dropdown([['all', 'All messages'], ['last', 'The last'], ['first', 'The first']], s.count, (v) => set({ count: v }, true));
+    wrap.append(field('How many', s.count === 'all' ? count : row(count, numberBox(s.n, 1, (v) => set({ n: v })))));
+
+    wrap.append(field('From', dropdown([['any', 'Anyone'], ['user', 'Only the user'], ['char', 'Only the character']], s.who, (v) => set({ who: v }))));
+
+    const nums = el('input', 'text_pole');
+    nums.placeholder = 'e.g. 23, 25, 30-35';
+    nums.value = s.numbers;
+    nums.addEventListener('input', () => set({ numbers: nums.value }));
+    wrap.append(field('Only message numbers', nums, 'The # numbers SillyTavern shows on each message. Leave empty for any.'));
+
+    wrap.append(field('Leave out the newest', row(numberBox(s.skip, 0, (v) => set({ skip: v })), el('span', 'pc-hint', 'messages'))));
+
+    // --- text ---
+    wrap.append(el('div', 'pc-select-sub', 'Text'));
+    const keep = dropdown([['all', 'The whole text'], ['firstPara', 'The first paragraphs'], ['lastPara', 'The last paragraphs']], s.keep, (v) => set({ keep: v }, true));
+    wrap.append(field('Keep', s.keep === 'all' ? keep : row(keep, numberBox(s.paras, 1, (v) => set({ paras: v })))));
+
+    const tag = el('input', 'text_pole');
+    tag.placeholder = 'e.g. plan  →  keeps <plan>…</plan>';
+    tag.value = s.between;
+    tag.addEventListener('input', () => set({ between: tag.value }));
+    wrap.append(field('Only the text inside the tag', tag));
+
+    wrap.append(checkline('Remove thinking (<think>…</think>)', s.stripThinking, (v) => set({ stripThinking: v })));
+
+    // --- how it arrives ---
+    wrap.append(el('div', 'pc-select-sub', 'Arrives as'));
+    wrap.append(checkline('One piece of text, instead of separate messages', s.join, (v) => set({ join: v }, true)));
+    if (s.join) wrap.append(checkline('Put the speaker\u2019s name in front of each part', s.labels, (v) => set({ labels: v })));
+
+    // --- preview ---
+    const out = el('div', 'pc-select-preview');
+    const btns = row();
+    const show = el('div', 'pc-btn menu_button');
+    show.innerHTML = '<i class="fa-solid fa-eye"></i> Show what it carries now';
+    show.addEventListener('click', async () => {
+        out.textContent = 'Working\u2026';
+        try {
+            const live = await gatherContext({ dryRun: true });
+            const msgs = wirePreview(current, wire, live);
+            const tokens = await countTokens(msgs);
+            out.innerHTML = '';
+            out.append(el('div', 'pc-hint', msgs.length
+                ? `${msgs.length} message${msgs.length === 1 ? '' : 's'} \u00b7 about ${tokens} tokens`
+                : 'Nothing \u2014 with this filter, no text crosses the wire.'));
+            for (const m of msgs) {
+                const card = el('div', 'pc-select-msg');
+                card.append(el('div', 'pc-select-role', m.role), el('div', 'pc-select-text', m.content));
+                out.append(card);
+            }
+        } catch (e) {
+            out.textContent = `Could not build the preview: ${e?.message ?? e}`;
+        }
+    });
+    btns.append(show);
+    if (selectActive(wire.select)) {
+        const clear = el('div', 'pc-btn menu_button');
+        clear.innerHTML = '<i class="fa-solid fa-filter-circle-xmark"></i> Send everything';
+        clear.title = 'Remove this filter';
+        clear.addEventListener('click', () => { delete wire.select; touch(); canvas.render(); renderInspector(); });
+        btns.append(clear);
+    }
+    wrap.append(btns, out);
+}
+
 /** A wire that sends a result back up the canvas. */
 function renderLoopInspector(box, wire, from, to) {
     const key = from?.type === NODE_TYPES.DECIDER
@@ -1345,7 +1500,7 @@ function renderLoopInspector(box, wire, from, to) {
 /** Where a Generate block's task comes from, in one sentence. */
 function instructionHint(node) {
     const inputs = Object.values(current.wires)
-        .filter(w => w.to === node.id && w.kind !== WIRE_KINDS.TOGETHER && !w.loop)
+        .filter(w => w.to === node.id && w.kind !== WIRE_KINDS.TOGETHER && !w.loop && w.mode !== 'activate')
         .map(w => current.nodes[w.from]).filter(Boolean)
         .sort((a, b) => (a.y - b.y) || (a.x - b.x));
     const own = String(node.content ?? '').trim();
@@ -1446,6 +1601,164 @@ async function runBlockTest(node, button, box) {
         panel.append(sent);
     }
     slot.append(panel);
+}
+
+/** Lorebook: which lorebooks, which entries, how much, and how they read. */
+function renderLoreFields(box, node) {
+    const redraw = () => { touch(); canvas.render(); renderInspector(); };
+    const soft = () => { touch(); canvas.render(); };
+    const lore = liveCache?.lore;
+    node.sources ??= { chat: true, character: true, persona: false, global: false };
+    node.books ??= [];
+    const numberBox = (value, min, onInput, cls = 'pc-select-num') => {
+        const i = el('input', `text_pole ${cls}`);
+        i.type = 'number'; i.min = String(min); i.value = value;
+        i.addEventListener('input', () => onInput(Math.max(min, Math.round(Number(i.value) || 0))));
+        return i;
+    };
+    const row = (...kids) => { const r = el('div', 'pc-select-row'); r.append(...kids); return r; };
+
+    box.append(el('div', 'pc-hint', 'Reads your lorebooks directly, so this block decides which entries are sent and where. Anything wired into it is text to scan for keys, and stops here.'));
+
+    // 1. which lorebooks
+    box.append(el('div', 'pc-select-sub', 'Lorebooks'));
+    const linked = el('div', 'pc-checks');
+    const say = (list) => (list?.length ? `: ${list.join(', ')}` : lore ? ': none' : '');
+    for (const [k, label] of [['chat', 'The chat’s'], ['character', 'The character’s'], ['persona', 'The persona’s'], ['global', 'Global (switched on in World Info)']]) {
+        linked.append(checkline(`${label}${say(lore?.sources?.[k])}`, !!node.sources[k], (v) => { node.sources[k] = v; refreshLive().then(redraw); }));
+    }
+    box.append(linked);
+    const names = (lore?.names ?? []).filter(n => !node.books.includes(n));
+    const chips = el('div', 'pc-dest-chips');
+    for (const b of node.books) {
+        const chip = el('span', 'pc-dest-chip', b);
+        const x = el('i', 'fa-solid fa-xmark pc-dest-x');
+        x.addEventListener('click', () => { node.books = node.books.filter(n => n !== b); touch(); refreshLive().then(redraw); });
+        chip.append(x);
+        chips.append(chip);
+    }
+    const add = el('select', 'pc-select text_pole');
+    add.append(Object.assign(el('option', '', names.length ? '+ add a lorebook…' : 'no other lorebooks found'), { value: '' }));
+    for (const n of names) add.append(Object.assign(el('option', '', n), { value: n }));
+    add.addEventListener('change', () => { if (!add.value) return; node.books.push(add.value); touch(); refreshLive().then(redraw); });
+    box.append(field('Also these', row(chips, add)));
+
+    // 2. which entries
+    box.append(el('div', 'pc-select-sub', 'Which entries'));
+    box.append(field('Send', dropdown([
+        ['st', 'As SillyTavern would (keys, constant…)'],
+        ['scan', 'Entries whose keys appear in…'],
+        ['all', 'Every entry'],
+        ['constant', 'Only constant entries'],
+        ['picked', 'Only the entries I pick'],
+    ], node.mode ?? 'st', (v) => { node.mode = v; redraw(); }), {
+        st: 'On a send, exactly what SillyTavern activated. The preview can only estimate it (constant entries, and keys in the last messages it scans).',
+        scan: 'Keys are matched the way SillyTavern matches them (regex keys, whole words, case), without its extras such as sticky, cooldown or vectors.',
+    }[node.mode ?? 'st'] ?? ''));
+    if (node.mode === 'scan') {
+        const from = dropdown([['inputs', 'the text wired into this block'], ['chat', 'the last messages of the chat']], node.scanFrom ?? 'inputs', (v) => { node.scanFrom = v; redraw(); });
+        box.append(field('Scan', node.scanFrom === 'chat' ? row(from, numberBox(node.scanDepth ?? 4, 1, (v) => { node.scanDepth = v; soft(); }), el('span', 'pc-hint', 'messages')) : from,
+            node.scanFrom === 'chat' ? '' : 'For example, wire a Generate block that plans the scene into this one, and the lore for whatever it mentions comes along.'));
+        box.append(checkline('Also send constant entries', node.includeConstant !== false, (v) => { node.includeConstant = v; soft(); }));
+    }
+    if (node.mode === 'picked') {
+        const list = el('div', 'pc-lore-pick');
+        const want = new Set(node.picked ?? []);
+        let any = false;
+        for (const b of blockBooksOf(node)) {
+            const entries = lore?.books?.[b] ?? [];
+            if (!entries.length) continue;
+            list.append(el('div', 'pc-select-sub', b));
+            for (const e of entries) {
+                any = true;
+                const id = `${b}|${e.uid}`;
+                list.append(checkline(e.title || `#${e.uid}${e.keys.length ? ` (${e.keys.slice(0, 3).join(', ')})` : ''}`, want.has(id), (v) => {
+                    if (v) want.add(id); else want.delete(id);
+                    node.picked = [...want]; soft();
+                }));
+            }
+        }
+        if (!any) list.append(el('div', 'pc-hint', lore ? 'No entries found in the chosen lorebooks.' : 'Open a chat to list the entries.'));
+        box.append(list);
+    }
+
+    // filters
+    const title = el('input', 'text_pole');
+    title.placeholder = 'e.g. Tavern, Sword';
+    title.value = node.titleFilter ?? '';
+    title.addEventListener('input', () => { node.titleFilter = title.value; soft(); });
+    box.append(field('Only titles containing', title, 'Comma-separated. Leave empty for any.'));
+    const group = el('input', 'text_pole');
+    group.placeholder = 'any group';
+    group.value = node.group ?? '';
+    group.addEventListener('input', () => { node.group = group.value; soft(); });
+    box.append(field('Only the group', group));
+    box.append(field('Only entries set to', dropdown(LORE_POSITIONS, String(node.position ?? 'any'), (v) => { node.position = v; soft(); })));
+    box.append(checkline('Only memories written by the Memory Books extension', !!node.memoryOnly, (v) => { node.memoryOnly = v; redraw(); }));
+    if (node.memoryOnly) {
+        box.append(field('Skip memories of the last', row(numberBox(node.skipRecent ?? 0, 0, (v) => { node.skipRecent = v; soft(); }), el('span', 'pc-hint', 'messages (0 = none)')),
+            'So a scene still in the chat history you send is not told twice.'));
+    }
+    box.append(checkline('Include entries switched off in the lorebook', !!node.includeDisabled, (v) => { node.includeDisabled = v; soft(); }));
+
+    // 3. how much
+    box.append(el('div', 'pc-select-sub', 'How much'));
+    box.append(field('At most', row(numberBox(node.maxEntries ?? 0, 0, (v) => { node.maxEntries = v; soft(); }), el('span', 'pc-hint', 'entries, and'),
+        numberBox(node.tokenBudget ?? 0, 0, (v) => { node.tokenBudget = v; soft(); }, 'pc-select-num pc-wide-num'), el('span', 'pc-hint', 'tokens (0 = no limit)')),
+        'When there are too many, the entries at the end of the order are kept: the highest order, or the most recently mentioned.'));
+    box.append(field('Order', dropdown([['order', 'By the entries’ own order'], ['recent', 'Most recently mentioned last'], ['alpha', 'Alphabetical']], node.order ?? 'order', (v) => { node.order = v; soft(); })));
+
+    // 4. how it is sent
+    box.append(el('div', 'pc-select-sub', 'How it is sent'));
+    box.append(field('Role', dropdown(ROLES.map(r => [r, r]), node.role || 'system', (v) => { node.role = v; soft(); })));
+    box.append(checkline('Put each entry’s title above it', !!node.titles, (v) => { node.titles = v; soft(); }));
+    box.append(checkline('One message per entry', !!node.separate, (v) => { node.separate = v; soft(); }));
+    for (const [k, label, ph] of [['prefix', 'Put in front', 'e.g. What the world knows:'], ['suffix', 'Put after', '']]) {
+        const t = el('textarea', 'text_pole pc-textarea');
+        t.rows = 2; t.placeholder = ph; t.value = node[k] ?? '';
+        t.addEventListener('input', () => { node[k] = t.value; soft(); });
+        box.append(field(label, t));
+    }
+
+    // 5. with the rest of the canvas
+    box.append(el('div', 'pc-select-sub', 'With the rest of the canvas'));
+    box.append(checkline('Keep these lorebooks out of World Info, so nothing is sent twice', !!node.excludeFromWI, (v) => { node.excludeFromWI = v; soft(); }));
+    box.append(el('div', 'pc-hint', 'To route on which lore fired, wire this block into a Decider and set the wire to Forward result: it then carries the entry names.'));
+
+    // preview
+    const out = el('div', 'pc-select-preview');
+    const show = el('div', 'pc-btn menu_button');
+    show.innerHTML = '<i class="fa-solid fa-eye"></i> Which entries fire now?';
+    show.addEventListener('click', async () => {
+        out.textContent = 'Looking…';
+        try {
+            const live = await refreshLive();
+            const built = collect(current, node.id, live, {});
+            const entries = built.fired?.[node.id] ?? [];
+            out.innerHTML = '';
+            const t = built.trace.find(x => x.id === node.id);
+            out.append(el('div', 'pc-hint', entries.length
+                ? `${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}, about ${Math.ceil(textOf(built.messages).length / 4)} tokens${t?.why?.includes('estimated') ? ' — estimated: on a send, SillyTavern decides' : ''}`
+                : 'No entries fire right now.'));
+            for (const e of entries) {
+                const r = el('div', 'pc-dec-test-row pc-yes');
+                r.innerHTML = `<i class="fa-solid fa-book"></i> <b>${escapeHtml(e.title || `#${e.uid}`)}</b> <span>${escapeHtml(e.why)} · ${escapeHtml(e.book)}</span>`;
+                out.append(r);
+            }
+            for (const w of built.warnings) out.append(el('div', 'pc-hint', w));
+            for (const er of live?.lore?.errors ?? []) out.append(el('div', 'pc-hint', er));
+        } catch (e) {
+            out.textContent = `Could not look: ${e?.message ?? e}`;
+        }
+    });
+    box.append(show, out);
+}
+
+/** The lorebooks a Lorebook block reads, from the last gathered context. */
+function blockBooksOf(node) {
+    const s = node.sources ?? {};
+    const src = liveCache?.lore?.sources ?? {};
+    return [...new Set([...(s.chat ? src.chat ?? [] : []), ...(s.character ? src.character ?? [] : []), ...(s.persona ? src.persona ?? [] : []), ...(s.global ? src.global ?? [] : []), ...(node.books ?? [])])];
 }
 
 function renderInjectionFields(box, node) {
@@ -1711,27 +2024,104 @@ function destinationPicker(node, key) {
     return wrap;
 }
 
+/** Whether the "?" guide is open in the Decider inspector. */
+let guideOpen = false;
+
+/** The Decider guide: short, with two examples you can drop in. */
+function deciderGuide(node, redraw) {
+    const d = el('details', 'pc-guide');
+    d.open = guideOpen;
+    d.addEventListener('toggle', () => { guideOpen = d.open; });
+    d.append(el('summary', '', 'How Deciders work'));
+    const body = el('div', 'pc-guide-body');
+    body.innerHTML = `
+        <p><b>What it is.</b> A Decider looks at text or the chat, and decides which blocks run. Blocks on paths it does not take are skipped and cost nothing.</p>
+        <p><b>Inputs.</b> Wire blocks into its top. Rules can read all of them together, or one on its own.</p>
+        <p><b>Outputs.</b> One output per path, each with its own rules. Each output has its own dot on the block’s bottom edge. <b>Otherwise</b> fires when nothing else does, and can be left unwired.</p>
+        <p><b>How it routes.</b></p>
+        <ul>
+            <li><b>Every match</b> — all outputs whose rules hold fire. “red” and “blue” both present: both fire.</li>
+            <li><b>First match</b> — outputs are checked top to bottom; only the first that holds fires.</li>
+            <li><b>AI sorts</b> — describe each output in plain words; one small model call picks the ones that apply.</li>
+            <li><b>Random</b> — a weighted pick.</li>
+        </ul>
+        <p><b>Wires out of it.</b> Click a wire to choose what travels: <b>Send</b> (solid) passes the text on; <b>Activate</b> (dotted) only switches the block on so it uses its own text; <b>Forward result</b> (dash-dot) sends the decision itself — put <code>{{result}}</code> in the next block.</p>
+        <p><b>Try it.</b> Use the test box at the bottom: paste some text and see which outputs light up.</p>`;
+    d.append(body);
+
+    const examples = el('div', 'pc-row pc-guide-examples');
+    const example = (label, apply) => {
+        const b = el('div', 'pc-btn menu_button', label);
+        b.addEventListener('click', async () => {
+            if ((node.keys ?? []).length && !await confirmBox(`Replace the outputs of "${node.title}" with this example? Their wires are removed too.`)) return;
+            for (const k of [...(node.keys ?? [])]) removeDeciderKey(current, node, k.id);
+            apply();
+            guideOpen = false;
+            redraw();
+        });
+        return b;
+    };
+    const words = (name, terms) => ({ ...newDeciderKey(name), conditions: [{ mode: 'search', scope: 'incoming', terms, matchMode: 'any' }] });
+    examples.append(
+        example('Example: colour router', () => {
+            node.mode = 'all';
+            node.keys = [words('Red', 'red\ncrimson\nscarlet'), words('Blue', 'blue\nazure\nnavy')];
+        }),
+        example('Example: AI yes/no', () => {
+            node.mode = 'first';
+            node.keys = [{ ...newDeciderKey('Yes'), conditions: [{ mode: 'ai', question: 'Is the character angry in this text?' }] }];
+            node.fallback.name = 'No';
+        }),
+    );
+    d.append(examples);
+    return d;
+}
+
+/** Whether a rule reads the text wired in (so it can be pointed at one input). */
+function readsInput(c) {
+    if (!c) return false;
+    if (c.mode === 'search' || c.mode === 'lacks') return (c.scope ?? 'incoming') === 'incoming';
+    if (c.mode === 'length' || c.mode === 'ai') return true;
+    if (c.mode === 'number') return ['words', 'chars', 'found', undefined].includes(c.source);
+    return false;
+}
+
 function renderDeciderFields(box, node) {
     const redraw = () => { touch(); canvas.render(); renderInspector(); };
     node.keys ??= [];
     node.fallback ??= { id: `k_${Date.now().toString(36)}`, name: 'Otherwise', weight: 1 };
+    const mode = routingMode(node);
 
-    box.append(el('div', 'pc-hint',
-        'Picks one path for what is wired into it. No model is asked: the keys are checked top to bottom, the first that matches wins, and the fallback takes everything else. What comes in goes on, unchanged, down the chosen path only. Blocks on the other paths are skipped and cost nothing.'));
+    box.append(deciderGuide(node, redraw));
 
-    box.append(field('Choose by', dropdown([
-        ['rules', 'Rules — first key that matches'],
-        ['random', 'Weighted random'],
-    ], node.mode ?? 'rules', (v) => { node.mode = v; redraw(); })));
+    box.append(field('How it routes', dropdown([
+        ['', 'Choose…'],
+        ['all', 'Every output that matches'],
+        ['first', 'Only the first match'],
+        ['ai', 'Let the AI sort'],
+        ['random', 'Random (weighted)'],
+    ], mode ?? '', (v) => { node.mode = v || null; redraw(); }), {
+        all: 'Every output whose rules hold fires. Several can fire at once.',
+        first: 'Outputs are checked top to bottom. Only the first that holds fires.',
+        ai: 'One small model call reads the text and picks the outputs that apply, by their descriptions.',
+        random: 'A weighted pick. No rules.',
+    }[mode] ?? 'Not set up yet. Until you choose, nothing below this Decider is sent. The “How Deciders work” guide above has two examples to start from.'));
 
-    const random = node.mode === 'random';
+    // Inputs: the blocks wired into its top.
+    const inputs = deciderInputList(current, node);
+    const inBox = el('div', 'pc-dest-chips');
+    if (!inputs.length) inBox.append(el('span', 'pc-hint pc-dest-none', 'nothing wired in — rules can still read the chat'));
+    for (const i of inputs) inBox.append(el('span', 'pc-dest-chip', `↓ ${i.title}`));
+    box.append(field('Inputs', inBox, inputs.length > 1 ? 'Each rule can read all of them together, or one on its own.' : ''));
 
+    // Outputs.
+    box.append(el('div', 'pc-select-sub', 'Outputs'));
     node.keys.forEach((k, i) => {
         const card = el('div', 'pc-key-card');
         const head = el('div', 'pc-key-head');
         const name = el('input', 'text_pole pc-key-name');
         name.value = k.name ?? '';
-        name.placeholder = 'KEY';
+        name.placeholder = 'Output name';
         name.addEventListener('input', () => { k.name = name.value; touch(); canvas.render(); });
         head.append(name);
         const tool = (icon, title, fn, off = false) => {
@@ -1740,27 +2130,47 @@ function renderDeciderFields(box, node) {
             return b;
         };
         head.append(
-            tool('fa-arrow-up', 'Check this key earlier', () => { if (i) { [node.keys[i - 1], node.keys[i]] = [node.keys[i], node.keys[i - 1]]; redraw(); } }, i === 0),
-            tool('fa-arrow-down', 'Check this key later', () => { if (i < node.keys.length - 1) { [node.keys[i + 1], node.keys[i]] = [node.keys[i], node.keys[i + 1]]; redraw(); } }, i === node.keys.length - 1),
-            tool('fa-trash-can', 'Remove this key and its wires', () => { removeDeciderKey(current, node, k.id); redraw(); }),
+            tool('fa-arrow-up', 'Move up', () => { if (i) { [node.keys[i - 1], node.keys[i]] = [node.keys[i], node.keys[i - 1]]; redraw(); } }, i === 0),
+            tool('fa-arrow-down', 'Move down', () => { if (i < node.keys.length - 1) { [node.keys[i + 1], node.keys[i]] = [node.keys[i], node.keys[i + 1]]; redraw(); } }, i === node.keys.length - 1),
+            tool('fa-clone', 'Duplicate this output (without its wires)', () => {
+                const copy = structuredClone(k);
+                copy.id = newDeciderKey().id;
+                copy.name = `${k.name || 'Output'} copy`;
+                node.keys.splice(i + 1, 0, copy);
+                redraw();
+            }),
+            tool('fa-trash-can', 'Remove this output and its wires', () => { removeDeciderKey(current, node, k.id); redraw(); }),
         );
         card.append(head);
         card.append(destinationPicker(node, k));
 
-        if (random) {
+        if (mode === 'random') {
             const w = el('input', 'text_pole');
             w.type = 'number'; w.min = '0'; w.value = k.weight ?? 1;
             w.addEventListener('input', () => { k.weight = Math.max(0, Number(w.value) || 0); touch(); canvas.render(); });
             card.append(field('Weight', w));
+        } else if (mode === 'ai') {
+            const d = el('textarea', 'text_pole pc-textarea');
+            d.rows = 2;
+            d.placeholder = 'When should this fire? e.g. The scene turns violent or someone is hurt.';
+            d.value = k.description ?? '';
+            d.addEventListener('input', () => { k.description = d.value; touch(); canvas.render(); });
+            card.append(field('Description for the AI', d));
         } else {
             k.conditions ??= [];
             if (k.conditions.length > 1) {
-                card.append(field('Matches when', dropdown([['any', 'any rule below holds'], ['all', 'every rule below holds']],
+                card.append(field('Fires when', dropdown([['any', 'any rule below holds (OR)'], ['all', 'every rule below holds (AND)']],
                     k.match ?? 'any', (v) => { k.match = v; touch(); canvas.render(); })));
             }
             k.conditions.forEach((c, ci) => {
                 const rule = el('div', 'pc-key-rule');
                 renderRuleFields(rule, c, { label: k.conditions.length > 1 ? `Rule ${ci + 1}` : 'Rule', modes: KEY_RULE_MODES, scopes: KEY_SCOPES });
+                if (inputs.length > 1 && readsInput(c)) {
+                    const pairs = [['', 'all inputs together'], ...inputs.map(x => [x.wireId, x.title])];
+                    if (c.input && !inputs.some(x => x.wireId === c.input)) pairs.push([c.input, '(a wire that is gone)']);
+                    rule.append(field('Reads', dropdown(pairs, c.input ?? '', (v) => { if (v) c.input = v; else delete c.input; touch(); canvas.render(); })));
+                }
+                rule.append(checkline('NOT — flip it: holds when this is not true', !!c.not, (v) => { if (v) c.not = true; else delete c.not; touch(); canvas.render(); }));
                 if (k.conditions.length > 1) {
                     const rm = el('a', 'pc-key-rm', 'remove this rule');
                     rm.href = 'javascript:void(0)';
@@ -1769,7 +2179,7 @@ function renderDeciderFields(box, node) {
                 }
                 card.append(rule);
             });
-            const add = el('a', 'pc-key-add', '+ another rule for this key');
+            const add = el('a', 'pc-key-add', '+ another rule for this output');
             add.href = 'javascript:void(0)';
             add.addEventListener('click', () => { k.conditions.push({ mode: 'search', scope: 'incoming', terms: '', matchMode: 'any' }); redraw(); });
             card.append(add);
@@ -1778,9 +2188,9 @@ function renderDeciderFields(box, node) {
     });
 
     const addKey = el('div', 'pc-btn menu_button');
-    addKey.innerHTML = '<i class="fa-solid fa-plus"></i> Add a key';
+    addKey.innerHTML = '<i class="fa-solid fa-plus"></i> Add an output';
     addKey.addEventListener('click', () => {
-        node.keys.push(newDeciderKey(`KEY ${node.keys.length + 1}`));
+        node.keys.push(newDeciderKey(`Output ${node.keys.length + 1}`));
         redraw();
     });
     box.append(addKey);
@@ -1789,9 +2199,9 @@ function renderDeciderFields(box, node) {
     const fbName = el('input', 'text_pole pc-key-name');
     fbName.value = node.fallback.name ?? 'Otherwise';
     fbName.addEventListener('input', () => { node.fallback.name = fbName.value; touch(); canvas.render(); });
-    fb.append(field(random ? 'Fallback key' : 'Fallback — when no key matches', fbName));
+    fb.append(field(mode === 'random' ? 'Fallback output' : 'Otherwise — fires when nothing else does', fbName, mode === 'random' ? '' : 'Can be left unwired: then nothing below this Decider is sent when nothing matches.'));
     fb.append(destinationPicker(node, node.fallback));
-    if (random) {
+    if (mode === 'random') {
         const w = el('input', 'text_pole');
         w.type = 'number'; w.min = '0'; w.value = node.fallback.weight ?? 1;
         w.addEventListener('input', () => { node.fallback.weight = Math.max(0, Number(w.value) || 0); touch(); canvas.render(); });
@@ -1799,8 +2209,53 @@ function renderDeciderFields(box, node) {
     }
     box.append(fb);
 
+    if (mode === 'ai') {
+        node.sorter ??= {};
+        box.append(el('div', 'pc-select-sub', 'AI sorter'));
+        box.append(checkline('May pick several outputs', node.sorter.several !== false, (v) => { node.sorter.several = v; touch(); }));
+        const notes = el('textarea', 'text_pole pc-textarea');
+        notes.rows = 2;
+        notes.placeholder = 'Optional: anything else the AI should know when choosing.';
+        notes.value = node.sorter.instructions ?? '';
+        notes.addEventListener('input', () => { node.sorter.instructions = notes.value; touch(); });
+        box.append(field('Extra instructions', notes));
+        const m = el('input', 'text_pole');
+        m.placeholder = 'same model as the chat';
+        m.value = node.sorter.model ?? '';
+        m.addEventListener('input', () => { node.sorter.model = m.value || null; touch(); });
+        box.append(field('Model (optional)', m, 'A small, fast model is plenty. One short call per send.'));
+    }
+
+    box.append(deciderTestBox(node));
+
     box.append(checkline('Show its choice in the chat', node.showInChat !== false, (v) => { node.showInChat = v; touch(); }));
-    box.append(el('div', 'pc-hint', 'Wire each key from its own dot on the block’s bottom edge.'));
+}
+
+/** Paste text, see which outputs light up. Nothing is sent. */
+function deciderTestBox(node) {
+    const wrap = el('div', 'pc-select-box pc-dec-test');
+    wrap.append(el('div', 'pc-select-title', 'Test it'));
+    const sample = el('textarea', 'text_pole pc-textarea');
+    sample.rows = 3;
+    sample.placeholder = 'Paste some text, as if it came in through the inputs.';
+    const out = el('div', 'pc-dec-test-out');
+    const go = el('div', 'pc-btn menu_button');
+    go.innerHTML = '<i class="fa-solid fa-vial"></i> Test';
+    go.addEventListener('click', async () => {
+        out.textContent = 'Testing…';
+        let live;
+        try { live = liveCache ?? await refreshLive(); } catch { live = null; }
+        live ??= { chat: [], substitute: t => t, worldInfo: {}, extensionPrompts: {}, card: {} };
+        out.innerHTML = '';
+        for (const r of explainDecider(node, live, sample.value)) {
+            const row = el('div', `pc-dec-test-row ${r.pass === true ? 'pc-yes' : r.pass === false ? 'pc-no' : 'pc-maybe'}`);
+            const icon = r.pass === true ? 'fa-circle-check' : r.pass === false ? 'fa-circle-xmark' : 'fa-circle-question';
+            row.innerHTML = `<i class="fa-solid ${icon}"></i> <b>${escapeHtml(r.name)}</b> <span>${escapeHtml(r.why)}</span>`;
+            out.append(row);
+        }
+    });
+    wrap.append(sample, go, out, el('div', 'pc-hint', 'Rules that read the chat use the chat that is open now. AI rules are not asked here.'));
+    return wrap;
 }
 
 function renderModelEditor(box, node) {
@@ -2180,6 +2635,15 @@ async function onSeedFromST() {
 /* context menu                                                       */
 /* ================================================================== */
 
+/** Copy a block and select the copy. Ctrl+D, or the block's right-click menu. */
+function duplicateSelected(node, withInputs = false) {
+    const copy = duplicateNode(current, node.id, { withInputs });
+    if (!copy) return;
+    canvas.select({ kind: 'node', id: copy.id });
+    renderStatus();
+    refreshPreview();
+}
+
 function onCanvasMenu({ event, node, wire, at }) {
     document.querySelector('.pc-menu')?.remove();
     const menu = el('div', 'pc-menu');
@@ -2193,12 +2657,36 @@ function onCanvasMenu({ event, node, wire, at }) {
         return i;
     };
 
-    if (wire) {
+    if (wire?.loop) {
+        // A loop has no kind to change: offer what matters for a loop.
+        const from = current.nodes[wire.from];
+        menu.append(el('div', 'pc-menu-head', `Loop: at most ${wire.loop.max ?? 3}\u00d7`));
+        for (const n of [1, 2, 3, 5, 10]) {
+            if (n === (wire.loop.max ?? 3)) continue;
+            menu.append(item(`At most ${n}\u00d7`, 'fa-rotate', () => { wire.loop.max = n; touch(); canvas.render(); renderInspector(); }));
+        }
+        if (from?.type === NODE_TYPES.GENERATE) {
+            menu.append(item(wire.loop.stopWhenSame !== false ? 'Don\u2019t stop early' : 'Stop early if the answer stops changing', 'fa-hand', () => {
+                wire.loop.stopWhenSame = wire.loop.stopWhenSame === false; touch(); renderInspector();
+            }));
+        }
+        menu.append(item('Loop settings\u2026', 'fa-sliders', () => canvas.select({ kind: 'wire', id: wire.id })));
+        menu.append(item('Remove this loop', 'fa-trash-can', () => { disconnect(current, wire.id); selected = null; canvas.render(); renderInspector(); }));
+    } else if (wire) {
         for (const [kind, label] of Object.entries(WIRE_LABEL)) {
             menu.append(item(`Make it "${label}"`, 'fa-shuffle', () => canvas.setWireKind(wire.id, kind)));
         }
+        if (wire.kind !== WIRE_KINDS.TOGETHER && !wire.loop) {
+            menu.append(wire.mode === 'activate'
+                ? item('Send the text again', 'fa-align-left', () => { delete wire.mode; touch(); canvas.render(); renderInspector(); })
+                : item('Only switch it on (Activate)', 'fa-bolt', () => { wire.mode = 'activate'; touch(); canvas.render(); renderInspector(); }));
+        }
         menu.append(item('Cut wire', 'fa-scissors', () => { disconnect(current, wire.id); canvas.render(); }));
     } else if (node) {
+        if (node.type !== NODE_TYPES.OUTPUT) {
+            menu.append(item('Duplicate', 'fa-clone', () => duplicateSelected(node, false)));
+            menu.append(item('Duplicate with its inputs', 'fa-clone', () => duplicateSelected(node, true)));
+        }
         menu.append(item(node.enabled === false ? 'Switch on' : 'Switch off', 'fa-power-off', () => {
             node.enabled = node.enabled === false;
             touch();
@@ -2250,6 +2738,7 @@ function onCanvasMenu({ event, node, wire, at }) {
             [NODE_TYPES.ST, 'fa-box-archive', 'SillyTavern prompt'],
             [NODE_TYPES.HISTORY, 'fa-clock-rotate-left', 'Chat history'],
             [NODE_TYPES.INJECTION, 'fa-syringe', 'Injection'],
+            [NODE_TYPES.LOREBOOK, 'fa-book-atlas', 'Lorebook'],
             [NODE_TYPES.NOTE, 'fa-note-sticky', 'Note'],
         ]) {
             menu.append(item(`Add ${label}`, icon, () => {

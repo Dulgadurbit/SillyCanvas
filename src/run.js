@@ -16,8 +16,8 @@
  *    recorded as the error, the run continues, and you see it in the trace.
  */
 
-import { ctx, safe, settings, save as saveSettings, NODE_TYPES, togetherGroup, loopWires, loopSection } from './state.js?v=0.9.0';
-import { compile, collect, generateOrder, generateLevels, gatherContext, evaluateCondition, liveNodes, generateDeps, textOf } from './compile.js?v=0.9.0';
+import { ctx, safe, settings, save as saveSettings, NODE_TYPES, togetherGroup, loopWires, loopSection } from './state.js?v=0.10.0';
+import { compile, collect, generateOrder, generateLevels, gatherContext, evaluateCondition, liveNodes, generateDeps, textOf, picks } from './compile.js?v=0.10.0';
 
 /** The connection the chat itself is using, when a block does not name one. */
 function currentProfileId() {
@@ -337,7 +337,7 @@ async function askModel(rawMessages, node, signal = null) {
     if (!messages.length) throw new Error('nothing to send');
 
     const c = ctx();
-    const maxTokens = Math.max(1, Number(node.maxTokens) || 500);
+    const maxTokens = Math.max(1, Number(node.maxTokens) || DEFAULT_MAX_TOKENS);
     // "Same as the chat" means what the chat is using right now. The selected
     // connection profile is kept for its key, endpoint and preset, but its
     // saved model can be stale: switch the chat to another model without
@@ -447,6 +447,9 @@ function readReply(raw, isTextCompletion) {
         finish: choice.finish_reason ?? choice.native_finish_reason ?? null,
     };
 }
+
+/** A Generate block's reply limit when it has none of its own. */
+export const DEFAULT_MAX_TOKENS = 2000;
 
 /** A plain-English account of a reply that stopped early. */
 export function describeCutoff(title, usage, finish) {
@@ -595,6 +598,7 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
             model: effectiveModel(gen),
             usage: reply?.usage ?? null,
             finish: reply?.finish ?? null,
+            cutoff: reply ? describeCutoff(gen.title, reply.usage, reply.finish) : null,
         };
         if (at === -1) thoughts.push(entry); else thoughts[at] = entry;
         safe(() => onResult?.(entry));
@@ -612,7 +616,7 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
                 title: node?.title ?? d.title ?? 'Decider',
                 label: `${node?.title ?? 'Decider'} \u2192 ${d.name}${attempt > 1 ? ` (attempt ${attempt})` : ''}`,
                 text: d.why,
-                decision: d.key,
+                decision: d.keys ?? [d.key],
                 failed: null,
                 ms: 0,
                 show: node?.showInChat !== false,
@@ -645,7 +649,7 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
                 text = results[src.id];
             } else if (src.type === NODE_TYPES.DECIDER) {
                 const d = decisions[src.id];
-                if (!d || d.key !== wire.port) continue;
+                if (!d || !picks(d, wire.port)) continue;
                 token = d;
                 text = textOf(collect(graph, src.id, live, results, decisions).messages);
             } else continue;
@@ -694,7 +698,9 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
         if (wanted.length) {
             await Promise.all(wanted.map(async ([k, w]) => {
                 safe(() => onStage?.({ id: k, title: `${w.dec.title}: asking the AI`, showInChat: false }, done, total));
-                live.aiAnswers[k] = await askYesNo(w.dec, w.cond, w.incoming, signal);
+                live.aiAnswers[k] = w.cond?.mode === 'sorter'
+                    ? await askSorter(w.dec, w.incoming, signal)
+                    : await askYesNo(w.dec, w.cond, w.incoming, signal);
             }));
             continue;
         }
@@ -817,6 +823,58 @@ async function askYesNo(dec, cond, incoming, signal) {
     return { yes: false, unclear: true, text: '' };
 }
 
+/**
+ * "AI sorts": one model call reads the text and picks which of the Decider's
+ * outputs apply, going by each output's name and description. It answers
+ * with output names; anything it names that is not an output is ignored.
+ * @returns {{keys:string[], why:string, text:string}}
+ */
+export async function askSorter(dec, incoming, signal) {
+    const keys = (dec.keys ?? []).filter(Boolean);
+    const several = dec.sorter?.several !== false;
+    const pseudo = {
+        id: `${dec.id}-sorter`,
+        title: `${dec.title}: AI sorts`,
+        type: NODE_TYPES.GENERATE,
+        profileId: dec.sorter?.profileId || dec.profileId || null,
+        model: dec.sorter?.model || null,
+        maxTokens: 80,
+        thinking: 'off',
+        instructionAsUser: true,
+    };
+    const list = keys.map(k => `- ${k.name || 'output'}${String(k.description ?? '').trim() ? `: ${String(k.description).trim()}` : ''}`).join('\n');
+    const extra = String(dec.sorter?.instructions ?? '').trim();
+    const messages = [
+        { role: 'system', content: `You sort text into categories. Read the text, then answer with ${several ? 'the names of every category that applies, separated by commas' : 'the name of the single category that fits best'}. If none apply, answer NONE. Names only, no explanation.` },
+        { role: 'user', content: `CATEGORIES:\n${list}\n${extra ? `\nNOTES: ${extra}\n` : ''}\nTEXT:\n<<<\n${incoming || '(empty)'}\n>>>\n\nWhich ${several ? 'categories apply' : 'category fits'}?` },
+    ];
+    const read = (t) => {
+        const text = String(t ?? '').toLowerCase();
+        // Longest names first, so "Dark red" is not read as "red" as well.
+        const byLength = [...keys].sort((a, b) => String(b.name ?? '').length - String(a.name ?? '').length);
+        const found = [];
+        let rest = text;
+        for (const k of byLength) {
+            const name = String(k.name ?? '').trim().toLowerCase();
+            if (!name) continue;
+            const re = new RegExp(`(^|[^a-z0-9])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^a-z0-9])`, 'i');
+            if (re.test(rest)) { found.push(k.id); rest = rest.replace(re, ' '); }
+        }
+        const ordered = keys.filter(k => found.includes(k.id)).map(k => k.id);
+        return several ? ordered : ordered.slice(0, 1);
+    };
+    try {
+        const reply = await askModel(messages, pseudo, signal);
+        const picked = read(reply.text);
+        const names = keys.filter(k => picked.includes(k.id)).map(k => k.name);
+        return { keys: picked, text: reply.text, why: names.length ? `the AI picked ${names.join(', ')}` : 'the AI picked none of the outputs' };
+    } catch (err) {
+        if (signal?.aborted) return { keys: [], why: 'stopped', text: '' };
+        console.warn(`[prompt-canvas] "${dec.title}" AI sorter failed: ${describeError(err)}`);
+        return { keys: [], why: `the AI could not be asked (${describeError(err)}), so it takes Otherwise`, text: '' };
+    }
+}
+
 /** Two answers that differ only in spacing count as the same. */
 function sameText(a, b) {
     const norm = (t) => String(t ?? '').replace(/\s+/g, ' ').trim();
@@ -907,7 +965,7 @@ export async function previewBlock(graph, node) {
         warnings: built.warnings,
         profile: profileName(pid),
         model: node.model || info.model || null,
-        maxTokens: Math.max(1, Number(node.maxTokens) || 500),
+        maxTokens: Math.max(1, Number(node.maxTokens) || DEFAULT_MAX_TOKENS),
         thinking: node.thinking ?? 'off',
         problems: info.problems,
         chars: messages.reduce((n, m) => n + m.content.length, 0),

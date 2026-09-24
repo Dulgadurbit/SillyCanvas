@@ -11,7 +11,7 @@
  * later turn — only the canvas decides what gets sent.
  */
 
-import { ctx, safe } from './state.js?v=0.9.0';
+import { ctx, safe } from './state.js?v=0.10.0';
 
 const KEY = 'promptCanvas';
 
@@ -45,6 +45,7 @@ export function attachThoughts(messageId, thoughts) {
             usage: t.usage ?? null,
             finish: t.finish ?? null,
             decision: t.decision ?? null,
+            cutoff: t.cutoff ?? null,
         })),
     };
     safe(() => c.saveChat());
@@ -81,6 +82,9 @@ export function renderThoughts(messageId) {
 export function repaintAll() {
     const c = ctx();
     const chat = c.chat ?? [];
+    // A block whose message is gone, or has moved, is removed first; then
+    // each message that has answers gets its own drawn again.
+    document.querySelectorAll('#chat .mes .pc-thoughts:not(.pc-live)').forEach(b => b.remove());
     for (let i = 0; i < chat.length; i++) {
         if (chat[i]?.extra?.[KEY]) renderThoughts(i);
     }
@@ -133,7 +137,8 @@ function thoughtElement(t, { open = false, pending = false, prompt = t.prompt ??
             ? `${t.usage.completion_tokens} tokens, ${think} thinking`
             : `${t.usage.completion_tokens} tokens`);
     }
-    if (t.finish && t.finish !== 'stop') bits.push(`stopped: ${t.finish}`);
+    if (t.finish === 'length') bits.push('CUT OFF by the token limit');
+    else if (t.finish && t.finish !== 'stop') bits.push(`stopped: ${t.finish}`);
     if (t.ms) bits.push(`${(t.ms / 1000).toFixed(1)}s`);
     meta.textContent = bits.join(' · ');
 
@@ -149,7 +154,15 @@ function thoughtElement(t, { open = false, pending = false, prompt = t.prompt ??
         ? `This block failed, so it added nothing to the prompt.\n\n${t.failed}`
         : (t.text ?? '');
 
-    details.append(summary, body);
+    details.append(summary);
+    if (t.cutoff) {
+        const warn = document.createElement('div');
+        warn.className = 'pc-thought-cutoff';
+        warn.textContent = t.cutoff;
+        details.append(warn);
+        details.classList.add('pc-thought-cut');
+    }
+    details.append(body);
     if (Array.isArray(prompt) && prompt.length) details.append(promptInspector(prompt));
     return details;
 }

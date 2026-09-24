@@ -787,7 +787,7 @@
 }
 .pc-port-fallback .pc-port-keyname { color: var(--pc-text); }
 .pc-wire-key { stroke: var(--pc-decider); }
-.pc-wire-untaken { opacity: 0.25; stroke-dasharray: 4 5; }
+.pc-wire-untaken { opacity: 0.2; }
 .pc-node.pc-trace-skipped { opacity: 0.55; }
 .pc-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .pc-row > .text_pole, .pc-row > select { flex: 1 1 70px; min-width: 60px; }
@@ -876,3 +876,63 @@
 .pc-wire-label-loop { font-weight: 700; opacity: 0.9; }
 .pc-node-repeat { padding: 3px 10px 6px; font-size: 0.8em; color: var(--pc-generate); }
 .pc-dest-loop { background: color-mix(in srgb, var(--pc-generate) 18%, transparent); }
+
+/* ---- "Send what?" wire filter ---- */
+.pc-wire-label-filter { opacity: 0.95; font-weight: 600; fill: var(--pc-flow); }
+.pc-select-box { margin: 10px 0; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--pc-text) 18%, transparent); border-radius: 8px; }
+.pc-select-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.pc-select-title { font-weight: 700; }
+.pc-select-summary { font-size: 0.8em; opacity: 0.7; text-align: right; }
+.pc-select-sub { margin: 10px 0 2px; font-size: 0.75em; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.55; }
+.pc-select-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.pc-select-row > select { flex: 1 1 auto; min-width: 0; }
+.pc-select-num { width: 5em !important; flex: 0 0 auto; }
+.pc-select-preview { margin-top: 6px; max-height: 320px; overflow: auto; }
+.pc-select-msg { margin-top: 6px; padding: 6px 8px; border-radius: 6px; background: color-mix(in srgb, var(--pc-text) 6%, transparent); }
+.pc-select-role { font-size: 0.72em; text-transform: uppercase; opacity: 0.55; }
+.pc-select-text { white-space: pre-wrap; font-size: 0.85em; }
+
+/* ---- wire modes ---- */
+/* append is already dashed (10 4), so the modes use patterns of their own */
+.pc-wire.pc-wire-mode-activate { stroke-dasharray: 1 6; stroke-linecap: round; stroke-width: 3; }
+.pc-wire.pc-wire-mode-result { stroke-dasharray: 12 4 2 4; }
+
+/* ---- Decider redo ---- */
+.pc-dec-mode { font-size: 0.78em; opacity: 0.7; padding: 2px 10px 4px; font-style: italic; }
+.pc-dec-unset { opacity: 1; font-style: normal; font-weight: 600; color: var(--pc-warn); }
+.pc-help { cursor: pointer; opacity: 0.55; margin-left: auto; margin-right: 6px; font-size: 0.95em; }
+.pc-help:hover { opacity: 1; }
+.pc-guide { margin: 4px 0 10px; border: 1px solid color-mix(in srgb, var(--pc-text) 18%, transparent); border-radius: 8px; padding: 6px 10px; }
+.pc-guide > summary { cursor: pointer; font-weight: 700; }
+.pc-guide-body { font-size: 0.85em; line-height: 1.4; }
+.pc-guide-body p { margin: 6px 0; }
+.pc-guide-body ul { margin: 4px 0 6px 18px; padding: 0; }
+.pc-guide-examples { gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.pc-dec-test textarea { width: 100%; }
+.pc-dec-test-out { margin-top: 6px; }
+.pc-dec-test-row { font-size: 0.85em; padding: 3px 0; }
+.pc-dec-test-row span { opacity: 0.7; }
+.pc-dec-test-row.pc-yes i { color: #4caf50; }
+.pc-dec-test-row.pc-no i { opacity: 0.5; }
+.pc-dec-test-row.pc-maybe i { color: #d9a441; }
+.pc-thought-cut > summary .pc-thought-meta { color: #e57373; font-weight: 600; }
+.pc-thought-cutoff { margin: 4px 0 6px; padding: 4px 8px; border-left: 3px solid #e57373; font-size: 0.85em; }
+
+/* ---- what feeds the hovered / selected block ---- */
+.pc-focusing .pc-node:not(.pc-feeds):not(.pc-switches):not(.pc-focus) { opacity: 0.55; }
+.pc-node.pc-feeds { box-shadow: 0 0 0 2px var(--pc-flow), 0 0 12px color-mix(in srgb, var(--pc-flow) 45%, transparent); }
+.pc-node.pc-switches { outline: 2px dashed var(--pc-decider); outline-offset: 2px; }
+.pc-wire.pc-wire-feeds { stroke-width: 3.5px; opacity: 1; filter: drop-shadow(0 0 3px var(--pc-flow)); }
+.pc-badge-icon { margin-right: 1px; opacity: 0.85; }
+.pc-tok { font-size: 0.72em; opacity: 0.6; white-space: nowrap; margin-left: 4px; }
+
+/* loops: solid, coloured, with an arrowhead; the limit is a clickable badge beside the line */
+.pc-wire.pc-wire-loop { stroke-dasharray: none; stroke: var(--pc-generate); stroke-width: 2.5; opacity: 0.85; }
+.pc-wire-key.pc-wire-loop { stroke: var(--pc-decider); }
+.pc-loop-arrow { fill: var(--pc-generate); }
+.pc-wire-label.pc-wire-label-loop { pointer-events: auto; cursor: pointer; fill: var(--pc-generate); opacity: 1; font-weight: 700; }
+.pc-wire-label.pc-wire-label-loop:hover { text-decoration: underline; }
+.pc-menu-head { padding: 4px 10px; font-size: 0.8em; opacity: 0.6; }
+.pc-insp-actions { margin-top: 10px; } .pc-insp-actions > .pc-btn { flex: 1 1 0; margin: 0; }
+.pc-lore-pick { max-height: 260px; overflow: auto; margin: 4px 0 8px; }
+.pc-wide-num { width: 6em !important; }

@@ -13,7 +13,8 @@
 
 import {
     NODE_TYPES, WIRE_KINDS, connect, disconnect, removeNode, touchGraph, wiresInto, deciderKeys,
-} from './state.js?v=0.9.0';
+} from './state.js?v=0.10.0';
+import { selectLabel } from './select.js?v=0.10.0';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -35,11 +36,37 @@ const TYPE_LABEL = {
     [NODE_TYPES.OUTPUT]: 'Output',
     [NODE_TYPES.NOTE]: 'Note',
     [NODE_TYPES.DECIDER]: 'Decider',
+    [NODE_TYPES.LOREBOOK]: 'Lorebook',
 };
+
+/** A symbol per block type, so a canvas can be read at a glance. */
+const TYPE_ICON = {
+    [NODE_TYPES.PROMPT]: 'fa-align-left',
+    [NODE_TYPES.ST]: 'fa-book',
+    [NODE_TYPES.HISTORY]: 'fa-comments',
+    [NODE_TYPES.INJECTION]: 'fa-syringe',
+    [NODE_TYPES.GENERATE]: 'fa-wand-magic-sparkles',
+    [NODE_TYPES.OUTPUT]: 'fa-paper-plane',
+    [NODE_TYPES.NOTE]: 'fa-note-sticky',
+    [NODE_TYPES.DECIDER]: 'fa-code-fork',
+    [NODE_TYPES.LOREBOOK]: 'fa-book-atlas',
+};
+
+/** Whether the last decision took this output. Decisions used to name one key; now a list. */
+const took = (chosen, id) => Array.isArray(chosen) ? chosen.includes(id) : chosen === id;
+
+/** A Decider's routing mode, in words. Mirrors routingMode() in compile.js. */
+const ROUTING_WORDS = { all: 'every output that matches fires', first: 'the first output that matches fires', random: 'a weighted random pick', ai: 'the AI picks the outputs that apply' };
+function routingOf(node) {
+    if (node?.mode === null || node?.mode === '') return null;
+    if (node?.mode === undefined || node.mode === 'rules') return 'first';
+    return ROUTING_WORDS[node.mode] ? node.mode : 'first';
+}
 
 /** One rule, in a few words, for the face of a block. */
 export function ruleLabel(c) {
     if (!c) return '';
+    if (c.not) return `NOT ${ruleLabel({ ...c, not: false })}`;
     const OP = { gt: '>', lt: '<', gte: '\u2265', lte: '\u2264', eq: '=', every: 'every' };
     const terms = () => String(c.terms || '').split('\n').map(t => t.trim()).filter(Boolean);
     switch (c.mode) {
@@ -190,6 +217,60 @@ export class Canvas {
         this.applyTransform();
         this.#drawNodes();
         this.#drawWires();
+        this.#applyFocus();
+    }
+
+    /**
+     * What feeds a block: every block whose text ends up in it, and the wires
+     * that carry it. It stops at a Generate block, because only its answer
+     * travels on, not what went into it. Blocks that only switch it on
+     * (Activate wires) are returned separately.
+     */
+    feeders(nodeId) {
+        const nodes = new Set();
+        const wires = new Set();
+        const switches = new Set();
+        const stack = [nodeId];
+        const seen = new Set();
+        while (stack.length) {
+            const id = stack.pop();
+            if (seen.has(id)) continue;
+            seen.add(id);
+            for (const w of Object.values(this.graph.wires)) {
+                if (w.to !== id || w.kind === WIRE_KINDS.TOGETHER || w.loop) continue;
+                const src = this.graph.nodes[w.from];
+                if (!src) continue;
+                wires.add(w.id);
+                if (w.mode === 'activate') { if (!nodes.has(src.id)) switches.add(src.id); continue; }
+                nodes.add(src.id);
+                switches.delete(src.id);
+                if (src.type !== NODE_TYPES.GENERATE) stack.push(src.id);
+            }
+        }
+        return { nodes, wires, switches };
+    }
+
+    /** Light up what feeds the hovered block, or else the selected one. */
+    #applyFocus() {
+        const id = this.hoverId ?? (this.selection?.kind === 'node' ? this.selection.id : null);
+        const f = id && this.graph?.nodes[id] ? this.feeders(id) : null;
+        this.host.classList.toggle('pc-focusing', !!f && (f.nodes.size + f.switches.size) > 0);
+        for (const el of this.nodeLayer.querySelectorAll('.pc-node')) {
+            const nid = el.dataset.id;
+            el.classList.toggle('pc-feeds', !!f?.nodes.has(nid));
+            el.classList.toggle('pc-switches', !!f?.switches.has(nid));
+            el.classList.toggle('pc-focus', !!f && nid === id);
+        }
+        for (const p of this.svg.querySelectorAll('path.pc-wire')) {
+            p.classList.toggle('pc-wire-feeds', !!f?.wires.has(p.dataset.id));
+        }
+    }
+
+    /** Hovering a block shows what feeds it. */
+    setHover(id) {
+        if (this.hoverId === id) return;
+        this.hoverId = id;
+        this.#applyFocus();
     }
 
     /** Nodes with a path to Output. Anything else is decoration. */
@@ -239,13 +320,17 @@ export class Canvas {
 
         const t = this.trace?.get(node.id);
         if (t) el.classList.add(`pc-trace-${t.status}`);
+        el.addEventListener('mouseenter', () => this.setHover(node.id));
+        el.addEventListener('mouseleave', () => { if (this.hoverId === node.id) this.setHover(null); });
 
         const head = document.createElement('div');
         head.className = 'pc-node-head';
 
         const badge = document.createElement('span');
         badge.className = 'pc-badge';
-        badge.textContent = TYPE_LABEL[node.type] ?? node.type;
+        const icon = document.createElement('i');
+        icon.className = `fa-solid ${TYPE_ICON[node.type] ?? 'fa-square'} pc-badge-icon`;
+        badge.append(icon, ` ${TYPE_LABEL[node.type] ?? node.type}`);
 
         const title = document.createElement('span');
         title.className = 'pc-node-title';
@@ -253,6 +338,15 @@ export class Canvas {
         title.title = node.title || '';
 
         head.append(badge, title);
+        // Roughly how much of the prompt this block is, from the last preview.
+        if (t?.chars && t.status === 'in') {
+            const tok = document.createElement('span');
+            tok.className = 'pc-tok';
+            const n = Math.ceil(t.chars / 4);
+            tok.textContent = n >= 1000 ? `\u2248${(n / 1000).toFixed(1)}k tok` : `\u2248${n} tok`;
+            tok.title = 'About how many tokens this block adds (its own text, from the last preview)';
+            head.append(tok);
+        }
         if (node.enabled === false) {
             const off = document.createElement('span');
             off.className = 'pc-off-pill';
@@ -288,18 +382,38 @@ export class Canvas {
             list.className = 'pc-dec-keys';
             const chosen = this.trace?.get(node.id)?.decision ?? null;
             const keys = deciderKeys(node);
-            if (node.mode === 'random') {
+            const routing = routingOf(node);
+            const mode = document.createElement('div');
+            mode.className = `pc-dec-mode${routing ? '' : ' pc-dec-unset'}`;
+            mode.textContent = routing ? ROUTING_WORDS[routing] : 'Not set up yet \u2014 select it and choose how it routes';
+            list.append(mode);
+            if (routing === 'random') {
                 const total = keys.reduce((n, k) => n + Math.max(0, Number(k.weight ?? 1)), 0) || 1;
-                for (const k of keys) list.append(this.#keyRow(k, `${Math.round(100 * Math.max(0, Number(k.weight ?? 1)) / total)}%`, k.id === chosen));
-            } else {
+                for (const k of keys) list.append(this.#keyRow(k, `${Math.round(100 * Math.max(0, Number(k.weight ?? 1)) / total)}%`, took(chosen, k.id)));
+            } else if (routing) {
                 for (const k of node.keys ?? []) {
-                    const rules = (k.conditions ?? []).map(ruleLabel).filter(Boolean);
-                    const join = k.match === 'all' ? ' and ' : ' or ';
-                    list.append(this.#keyRow(k, rules.length ? `if ${rules.join(join)}` : 'no rules yet', k.id === chosen));
+                    let say;
+                    if (routing === 'ai') {
+                        const d = String(k.description ?? '').trim();
+                        say = d ? (d.length > 60 ? d.slice(0, 60) + '\u2026' : d) : 'no description yet';
+                    } else {
+                        const rules = (k.conditions ?? []).map(ruleLabel).filter(Boolean);
+                        const join = k.match === 'all' ? ' and ' : ' or ';
+                        say = rules.length ? `if ${rules.join(join)}` : 'no rules yet';
+                    }
+                    list.append(this.#keyRow(k, say, took(chosen, k.id)));
                 }
-                if (node.fallback) list.append(this.#keyRow(node.fallback, 'when nothing above matches', node.fallback.id === chosen, true));
+                if (node.fallback) list.append(this.#keyRow(node.fallback, 'when nothing else fires', took(chosen, node.fallback.id), true));
             }
             el.append(list);
+
+            // "?" opens the guide.
+            const help = document.createElement('div');
+            help.className = 'pc-help fa-solid fa-circle-question';
+            help.title = 'How Deciders work';
+            help.addEventListener('mousedown', e => e.stopPropagation());
+            help.addEventListener('click', (e) => { e.stopPropagation(); this.hooks.onHelp?.(node); });
+            head.insertBefore(help, head.querySelector('.pc-toggle'));
         }
 
         if (node.type !== NODE_TYPES.DECIDER && node.condition && node.condition.mode !== 'always') {
@@ -371,7 +485,7 @@ export class Canvas {
             const chosen = this.trace?.get(node.id)?.decision ?? null;
             keys.forEach((k, i) => {
                 const port = document.createElement('div');
-                port.className = `pc-port pc-port-out pc-port-key${k.id === chosen ? ' pc-port-chosen' : ''}${k === node.fallback ? ' pc-port-fallback' : ''}`;
+                port.className = `pc-port pc-port-out pc-port-key${took(chosen, k.id) ? ' pc-port-chosen' : ''}${k === node.fallback ? ' pc-port-fallback' : ''}`;
                 port.dataset.node = node.id;
                 port.dataset.dir = 'out';
                 port.dataset.port = k.id;
@@ -477,6 +591,22 @@ export class Canvas {
             }
             case NODE_TYPES.INJECTION:
                 return (node.sources || []).join(', ') || 'Nothing selected';
+            case NODE_TYPES.LOREBOOK: {
+                const src = node.sources ?? {};
+                const from = [src.chat && 'chat', src.character && 'character', src.persona && 'persona', src.global && 'global']
+                    .filter(Boolean).concat((node.books ?? []).map(b => `"${b}"`));
+                const how = {
+                    st: 'as SillyTavern would',
+                    scan: node.scanFrom === 'chat' ? `keys in the last ${node.scanDepth || 4} messages` : 'keys in the text wired in',
+                    all: 'every entry', constant: 'constant entries', picked: `${(node.picked ?? []).length} picked entries`,
+                }[node.mode ?? 'st'];
+                const bits = [how];
+                if (node.memoryOnly) bits.push('Memory Books only');
+                if (Number(node.maxEntries) > 0) bits.push(`max ${node.maxEntries}`);
+                if (Number(node.tokenBudget) > 0) bits.push(`\u2264${node.tokenBudget} tok`);
+                if (node.excludeFromWI) bits.push('kept out of World Info');
+                return `${from.length ? from.join(' + ') : 'no lorebooks chosen'} \u00b7 ${bits.join(' \u00b7 ')}`;
+            }
             case NODE_TYPES.NOTE:
                 return node.content || '';
             case NODE_TYPES.OUTPUT:
@@ -612,6 +742,8 @@ export class Canvas {
         this.svg.setAttribute('viewBox', `0 0 ${bounds.w} ${bounds.h}`);
         this.svg.setAttribute('width', bounds.w);
         this.svg.setAttribute('height', bounds.h);
+        // An arrowhead for loop wires, so it is clear which way they run.
+        this.svg.insertAdjacentHTML('beforeend', `<defs><marker id="pc-loop-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" class="pc-loop-arrow"/></marker></defs>`);
 
         for (const wire of Object.values(this.graph.wires)) {
             const tie = wire.kind === WIRE_KINDS.TOGETHER;
@@ -635,23 +767,42 @@ export class Canvas {
 
             const path = document.createElementNS(SVG_NS, 'path');
             path.setAttribute('d', d);
+            path.dataset.id = wire.id;
             const srcNode = this.graph.nodes[wire.from];
             const isKey = srcNode?.type === NODE_TYPES.DECIDER;
             const chosen = isKey ? this.trace?.get(wire.from)?.decision : undefined;
-            const untaken = isKey && chosen !== undefined && chosen !== null && chosen !== wire.port;
+            const untaken = isKey && chosen !== undefined && chosen !== null && !took(chosen, wire.port);
             const offWire = this.graph.nodes[wire.from]?.enabled === false || this.graph.nodes[wire.to]?.enabled === false;
-            path.setAttribute('class', `pc-wire pc-wire-${wire.kind}${wire.loop ? ' pc-wire-loop' : ''}${isKey ? ' pc-wire-key' : ''}${untaken ? ' pc-wire-untaken' : ''}${offWire ? ' pc-wire-off' : ''}${this.selection?.kind === 'wire' && this.selection.id === wire.id ? ' pc-selected' : ''}`);
+            const mode = !tie && (wire.mode === 'activate' || wire.mode === 'result') ? wire.mode : null;
+            path.setAttribute('class', `pc-wire pc-wire-${wire.kind}${mode ? ` pc-wire-mode-${mode}` : ''}${wire.loop ? ' pc-wire-loop' : ''}${isKey ? ' pc-wire-key' : ''}${untaken ? ' pc-wire-untaken' : ''}${offWire ? ' pc-wire-off' : ''}${this.selection?.kind === 'wire' && this.selection.id === wire.id ? ' pc-selected' : ''}`);
 
             const label = document.createElementNS(SVG_NS, 'text');
             label.setAttribute('class', 'pc-wire-label');
             const side = wire.loop ? this.#loopSide(from, to, wire) : null;
-            label.setAttribute('x', side ? side.x : (from.x + to.x) / 2);
-            label.setAttribute('y', side ? side.y : (from.y + to.y) / 2);
+            label.setAttribute('x', side ? side.x + 10 : (from.x + to.x) / 2);
+            label.setAttribute('y', side ? side.y + 4 : (from.y + to.y) / 2);
             const keyName = isKey ? (deciderKeys(srcNode).find(k => k.id === wire.port)?.name ?? 'key') : null;
             label.textContent = tie ? TOGETHER_LABEL
-                : wire.loop ? `\u21ba ${keyName ? keyName + ': ' : ''}up to ${wire.loop.max ?? 3}\u00d7`
+                : wire.loop ? `\u21ba ${keyName ? keyName + ' \u00b7 ' : ''}${wire.loop.max ?? 3}\u00d7 max`
+                // The output's name is already on its dot, so a mode wire just says what it does.
+                : mode === 'activate' ? '\u26a1 activate'
+                : mode === 'result' ? `\u2192 ${srcNode?.type === NODE_TYPES.LOREBOOK ? 'entry names' : wire.result === 'matched' ? 'matched words' : 'result'}`
                 : keyName ?? (WIRE_LABEL[wire.kind] ?? wire.kind);
-            if (wire.loop) label.classList.add('pc-wire-label-loop');
+            if (wire.loop) {
+                label.classList.add('pc-wire-label-loop');
+                label.dataset.id = wire.id;
+                label.setAttribute('text-anchor', 'start');
+                const tip = document.createElementNS(SVG_NS, 'title');
+                tip.textContent = 'Loop: runs this section again, at most this many times. Click to change.';
+                label.append(tip);
+                path.setAttribute('marker-end', 'url(#pc-loop-arrow)');
+            }
+            const filter = !tie && !wire.loop && !mode ? selectLabel(wire.select) : '';
+            if (filter) {
+                // The filter is the thing you most need to see: what actually crosses.
+                label.textContent += ` \u00b7 ${filter}`;
+                label.classList.add('pc-wire-label-filter');
+            }
 
             this.svg.append(hit, path, label);
         }
@@ -683,7 +834,7 @@ export class Canvas {
             if (!this.graph) return;
             const port = e.target.closest('.pc-port');
             const nodeEl = e.target.closest('.pc-node');
-            const wireHit = e.target.closest('.pc-wire-hit');
+            const wireHit = e.target.closest('.pc-wire-hit') ?? e.target.closest('.pc-wire-label-loop');
 
             if (port) {
                 e.preventDefault();
@@ -853,7 +1004,7 @@ export class Canvas {
         host.addEventListener('contextmenu', (e) => {
             e.preventDefault();
             const nodeEl = e.target.closest('.pc-node');
-            const wireHit = e.target.closest('.pc-wire-hit');
+            const wireHit = e.target.closest('.pc-wire-hit') ?? e.target.closest('.pc-wire-label-loop');
             this.hooks.onContextMenu?.({
                 event: e,
                 node: nodeEl ? this.graph.nodes[nodeEl.dataset.id] : null,
@@ -888,6 +1039,7 @@ export class Canvas {
             this.hooks.onToast?.('That is a "send together" tie. Nothing flows along it, so there is nothing to cycle.');
             return;
         }
+        if (wire.loop) { this.select({ kind: 'wire', id: wireId }); return; }
         const order = [WIRE_KINDS.MERGE, WIRE_KINDS.APPEND, WIRE_KINDS.PREPEND];
         wire.kind = order[(order.indexOf(wire.kind) + 1) % order.length];
         touchGraph(this.graph);

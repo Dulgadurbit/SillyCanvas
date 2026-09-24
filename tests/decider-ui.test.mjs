@@ -8,9 +8,24 @@ const { installMock } = await import('./mock.js');
 installMock({ settings: { graphs: {} } });
 const v = JSON.parse((await import('node:fs')).readFileSync(new URL('../manifest.json', import.meta.url))).version;
 const { Canvas, ruleLabel } = await import(`../src/canvas.js?v=${v}`);
-const { defaultNode, connect, NODE_TYPES } = await import(`../src/state.js?v=${v}`);
+const { defaultNode, connect, NODE_TYPES, newDeciderKey } = await import(`../src/state.js?v=${v}`);
+
+// a new Decider starts empty and says so
+{
+    const fresh = { ...defaultNode(NODE_TYPES.DECIDER, 0, 0), id: 'fresh' };
+    assert.equal(fresh.mode, null);
+    assert.deepEqual(fresh.keys, []);
+    const cv0 = new Canvas(document.getElementById('host'), { onChange() {}, onToast() {} });
+    cv0.setGraph({ nodes: { fresh }, wires: {}, view: { x: 0, y: 0, zoom: 1 } });
+    cv0.render();
+    assert.match(document.querySelector('.pc-node[data-id="fresh"]').textContent, /Not set up yet/);
+    assert.ok(document.querySelector('.pc-node[data-id="fresh"] .pc-help'), '? button');
+    document.getElementById('host').innerHTML = '';
+}
 
 const dec = { ...defaultNode(NODE_TYPES.DECIDER, 0, 0), id: 'dec' };
+dec.mode = 'first';
+dec.keys.push(newDeciderKey('DESLOP'));
 dec.keys[0].name = 'DESLOP';
 dec.keys[0].conditions[0].terms = 'Elara\nLyra';
 const n = (id, type, x, y) => ({ ...defaultNode(type, x, y), id, title: id });
@@ -39,7 +54,7 @@ assert.equal(wires.find(w => w.to === 'b').port, dec.fallback.id);
 assert.deepEqual([...document.querySelectorAll('.pc-wire-label')].map(l => l.textContent).sort(), ['DESLOP', 'Otherwise']);
 
 // after a run: chosen key highlighted, other wire dimmed
-cv.setTrace([{ id: 'dec', status: 'in', decision: dec.fallback.id }]);
+cv.setTrace([{ id: 'dec', status: 'in', decision: [dec.fallback.id] }]);
 assert.ok(document.querySelector('.pc-port-key.pc-port-fallback').classList.contains('pc-port-chosen'));
 assert.equal(document.querySelectorAll('.pc-wire-untaken').length, 1);
 
@@ -47,4 +62,5 @@ assert.equal(document.querySelectorAll('.pc-wire-untaken').length, 1);
 assert.equal(ruleLabel({ mode: 'time', from: '22:00', to: '06:00' }), '22:00–06:00');
 assert.equal(ruleLabel({ mode: 'length', op: 'gt', value: 300 }), 'input > 300 words');
 assert.equal(ruleLabel({ mode: 'chat', what: 'lastSpeaker', value: 'user' }), 'last speaker: user');
+assert.equal(ruleLabel({ mode: 'search', scope: 'incoming', terms: 'x', not: true }), 'NOT "x" in input');
 console.log('decider-ui: ok');

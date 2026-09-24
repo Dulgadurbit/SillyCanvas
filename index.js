@@ -16,15 +16,21 @@
  * generation is worse than one that does nothing.
  */
 
-import { settings, save, resolveGraph, ctx, safe } from './src/state.js?v=0.9.0';
-import { run, callCount } from './src/run.js?v=0.9.0';
-import * as UI from './src/ui.js?v=0.9.0';
-import { applyTheme } from './src/theme.js?v=0.9.0';
-import { renderThemeEditor } from './src/theme-editor.js?v=0.9.0';
-import { renderThoughts, attachThoughts, repaintAll, livePanel } from './src/thoughts.js?v=0.9.0';
+import { settings, save, resolveGraph, ctx, safe } from './src/state.js?v=0.10.0';
+import { run, callCount } from './src/run.js?v=0.10.0';
+import * as UI from './src/ui.js?v=0.10.0';
+import { applyTheme } from './src/theme.js?v=0.10.0';
+import { renderThemeEditor } from './src/theme-editor.js?v=0.10.0';
+import { renderThoughts, attachThoughts, repaintAll, livePanel } from './src/thoughts.js?v=0.10.0';
 
 const MODULE = 'prompt-canvas';
 let lastRun = null;
+/**
+ * A real send in progress. Only a real send blocks another: SillyTavern fires
+ * dry runs (token counting) at odd moments, often right after you edit
+ * something, and one still running used to make the next real send slip
+ * through untouched, so the canvas seemed not to activate.
+ */
 let busy = false;
 let pendingThoughts = null;
 /** Aborts the Generate blocks of the run in progress, when you press Stop. */
@@ -51,11 +57,12 @@ async function build(dryRun) {
     // Our own sub-calls go through ChatCompletionService, which emits no
     // events, so this guard is belt and braces rather than load-bearing.
     if (busy) {
+        if (dryRun) return null;       // a token count during a real send: not worth a second build
         console.warn(`[${MODULE}] already building a prompt; letting this one through untouched`);
         return null;
     }
 
-    busy = true;
+    if (!dryRun) busy = true;
     try {
         const calls = dryRun ? 0 : callCount(graph);
         if (calls) console.log(`[${MODULE}] "${graph.name}": ${calls} model call${calls === 1 ? '' : 's'} before the send`);
@@ -64,7 +71,7 @@ async function build(dryRun) {
         if (!dryRun) { livePanel.clear(); pendingThoughts = null; }
         const abort = dryRun ? null : new AbortController();
         currentAbort = abort;
-        const { plan, thoughts, failures, aborted, rescued, throttled } = await run(graph, {
+        const { plan, thoughts, failures, cutoffs, aborted, rescued, throttled } = await run(graph, {
             dryRun,
             signal: abort?.signal ?? null,
             onStage: (node) => { progress.running(node.title); safe(() => livePanel.running(node)); },
@@ -83,6 +90,9 @@ async function build(dryRun) {
             return null;
         }
 
+        // A dry run that finishes while a real send is running must not
+        // replace the record of what was actually sent.
+        if (dryRun && busy) return plan;
         lastRun = {
             at: Date.now(),
             graph: graph.name,
@@ -107,11 +117,14 @@ async function build(dryRun) {
         for (const f of failures ?? []) {
             warn(`"${f.title}" failed and added nothing to this prompt. ${f.error}`);
         }
+        // A reply cut off by its token limit is half an answer going into
+        // the prompt: say so where you will see it, not only in the console.
+        if (!dryRun) for (const c of cutoffs ?? []) warn(c);
 
         for (const w of [...new Set(plan.warnings)]) console.warn(`[${MODULE}] ${w}`);
         return plan;
     } finally {
-        busy = false;
+        if (!dryRun) busy = false;
     }
 }
 
@@ -447,6 +460,17 @@ export function getLastRun() {
             c.eventSource.on(c.eventTypes.MESSAGE_RECEIVED, onMessageReceived);
             c.eventSource.on(c.eventTypes.GENERATION_STOPPED, onGenerationStopped);
             c.eventSource.on(c.eventTypes.CHARACTER_MESSAGE_RENDERED, (id) => safe(() => renderThoughts(id)));
+            // Deleting or swiping a message renumbers the chat: redraw every
+            // folded answer block so none is left under the wrong message,
+            // and drop the live panel of a send that no longer has a reply.
+            for (const ev of ['MESSAGE_DELETED', 'MESSAGE_SWIPED', 'MESSAGE_EDITED']) {
+                const type = c.eventTypes[ev];
+                if (!type) continue;
+                c.eventSource.on(type, () => {
+                    if (ev === 'MESSAGE_DELETED') { safe(() => livePanel.clear()); pendingThoughts = null; }
+                    setTimeout(() => safe(() => repaintAll()), 0);
+                });
+            }
             c.eventSource.on(c.eventTypes.CHAT_CHANGED, () => { safe(() => livePanel.clear()); UI.refreshIfOpen(); safe(() => repaintAll()); paintSendbar(); });
             document.addEventListener('pc-state', () => { paintSendbar(); const cb = document.getElementById('pc-enabled'); if (cb) cb.checked = armed(); });
 

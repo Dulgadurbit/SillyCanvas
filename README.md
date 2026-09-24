@@ -50,6 +50,47 @@ Drag from the bottom edge of a block onto another block.
 
 Double-click a wire to change its kind.
 
+Each wire also has a **mode**, set in the inspector or from the wire's right-click menu:
+
+- **Send** (solid, the default): the text travels along the wire.
+- **Activate** (dotted): nothing travels. A block with Activate wires only runs when at least one of them fires, and then uses its own content. From a Decider output, the wire fires when that output is chosen; from any other block, when that block is on. A Generate block that is not switched on is never called.
+- **Forward result** (dash-dot, from a Decider only): sends the decision as text: the chosen output's name, or the words that matched. Put `{{result}}` in the target block's text to place it; otherwise it is joined like any wired text.
+
+## Send what? (wire filters)
+
+Click a wire to choose exactly what travels along it. The same block can feed different places different pieces: the whole story to the final prompt, and only the last reply to a Decider.
+
+- **Messages:** all, the last N or the first N; from anyone, only the user or only the character; only certain message numbers (`23, 25, 30-35`, the # numbers SillyTavern shows); leave out the newest N.
+- **Text:** keep the whole text or the first/last paragraphs, keep only what is inside a tag (`plan` keeps `<plan>…</plan>`), remove thinking.
+- **Arrives as:** separate messages, or one piece of text, optionally with the speaker's name in front of each part.
+
+The wire's label shows the filter (`last 5 · user`), and **Show what it carries now** previews the result for the open chat, with a token count.
+
+## Lorebook blocks
+
+A **Lorebook** block reads your lorebooks (World Info) directly, so the canvas decides which entries are sent and where they go.
+
+- **Which lorebooks:** the chat's, the character's (including its extra lorebooks), the persona's and the global ones, each switched on or off, plus any others you add by name.
+- **Which entries:**
+  - **As SillyTavern would.** On a send this is exactly what SillyTavern activated; the preview estimates it.
+  - **Entries whose keys appear in** the text wired into the block, or in the last N chat messages. Wire a Generate block that plans the scene into it, and the lore for whatever the plan mentions comes along. The wired text stops at the block and is not sent on.
+  - **Every entry**, **only constant entries**, or **only the entries you tick**.
+- **Filters:** title contains, group, entry position, only Memory Books memories (optionally skipping scenes still in the recent chat), and whether switched-off entries count.
+- **How much:** at most N entries and/or a token budget, ordered by the entries' own order, most recently mentioned, or alphabetically.
+- **How it is sent:** one message or one per entry, with or without titles, a role, and text before and after.
+- **Keep these lorebooks out of World Info**, so the same lore is not sent twice when World Info is also on the canvas.
+- **Which entries fire now?** previews the entries and the key that triggered each.
+
+Keys are matched the way SillyTavern matches them (regex keys, whole words, case, secondary keys), without its extras such as sticky, cooldown, groups' scoring or vectors. Those only apply in "As SillyTavern would" on a real send.
+
+To route on which lore fired, wire the Lorebook block into a Decider and set the wire to **Forward result**: it carries the entry names (`Dragon, Magic`), which the Decider's word rules can check.
+
+## Working on the canvas
+
+- **Duplicate** a block with Ctrl+D, its right-click menu, or the inspector. Ctrl+Shift+D also copies the wires coming into it.
+- **Hover or select** a block to light up everything that feeds it. Blocks that only switch it on get a dashed outline.
+- Each block shows roughly how many tokens it adds, from the last preview.
+
 ## Undo
 
 Ctrl+Z undoes the last change to the canvas and Ctrl+Shift+Z (or Ctrl+Y) redoes it. The arrow buttons in the header do the same, and hovering them shows what they will undo.
@@ -87,9 +128,20 @@ Only Generate blocks and Decider keys can loop, because only they can end a loop
 
 ## Decider blocks
 
-A Decider looks at what is wired into it and picks a path, without calling a model unless you ask it to. Each key gets its own dot on the block, or you can choose where it goes from the **Goes to** list in the inspector.
+A Decider looks at what is wired into it and decides which blocks run, like a router. Click the **?** on the block for a short guide with two examples.
 
-A key can match on:
+A new Decider starts empty and does nothing until you choose **how it routes**:
+
+- **Every output that matches**: every output whose rules hold fires. If a text mentions both red and blue, both the Red and Blue outputs fire.
+- **Only the first match**: outputs are checked top to bottom, and the first that holds fires. Old canvases work this way.
+- **Let the AI sort**: describe each output in plain words, and one small model call picks the ones that apply (one, or several).
+- **Random (weighted)**: a pick by chance.
+
+**Otherwise** fires when nothing else does. It can be left unwired.
+
+**Inputs.** Wire as many blocks into its top as you like. Each rule reads all of them together, or one on its own.
+
+**Outputs.** Each output has its own dot on the block, or you choose where it goes from the **Goes to** list in the inspector. An output's rules can match on:
 
 - words or phrases that appear, or don't appear
 - a number: word count, how often a word appears, message count, a variable, a dice roll
@@ -99,7 +151,11 @@ A key can match on:
 - the character or model name
 - a yes or no question put to a model (for example "Does this text read like AI slop?")
 
-Keys are checked from top to bottom, and the first match wins. The AI question is only asked if nothing above it has already matched. Or pick **Weighted random** to choose paths by chance.
+Several rules on one output can be joined with AND or OR, and any rule can be flipped with **NOT**. An AI question is only asked when nothing before it has already settled things.
+
+**Test it.** The test box at the bottom of the inspector takes some sample text and shows which outputs would fire, and why. Nothing is sent.
+
+Combine it with the wire modes: an **Activate** wire from an output switches a block on, and a **Forward result** wire sends the decision (`Red, Blue`, or the words that matched) into `{{result}}`.
 
 ## Themes
 
