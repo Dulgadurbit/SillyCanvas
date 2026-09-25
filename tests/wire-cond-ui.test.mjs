@@ -26,26 +26,50 @@ const select = (id) => {
 assert.match(document.querySelector(`.pc-node[data-id="${st.id}"]`).textContent, /No values yet/);
 select(st.id);
 await tick();
-[...document.querySelectorAll('.pc-inspector .pc-btn')].find(b => b.textContent.includes('Add a value')).click();
+// The State block edits in its own window.
+[...document.querySelectorAll('.pc-inspector .pc-btn')].find(b => b.textContent.includes('Open the State editor')).click();
+await tick();
+const win = () => document.querySelector('.pc-sw');
+assert.ok(win(), 'the State window opens');
+[...win().querySelectorAll('.pc-btn')].find(b => b.textContent.includes('Add a value')).click();
 await tick();
 assert.equal(st.values.length, 1);
 assert.equal(st.values[0].name, 'energy');
 // split into 5 stages
-[...document.querySelectorAll('.pc-inspector a')].find(a => a.textContent.startsWith('split')).click();
+[...win().querySelectorAll('.pc-sw-splitbtn')].find(b => b.textContent === '5').click();
 await tick();
 assert.equal(st.values[0].stages.length, 5);
 assert.deepEqual([st.values[0].stages[0].from, st.values[0].stages[0].to, st.values[0].stages[4].from, st.values[0].stages[4].to], [9, 10, 0, 1]);
-// its own output dot, and "right now" = 10 - 4 turns
+// its own output dot, and "now" = 10 - 4 turns
 assert.ok(document.querySelector(`.pc-node[data-id="${st.id}"] .pc-port-key`), 'an output dot per value');
-assert.match(document.querySelector('.pc-inspector').textContent, /Right now6/);
-// set by hand
-const setRow = [...document.querySelectorAll('.pc-inspector .pc-field')].find(f => f.textContent.startsWith('Right now'));
+assert.match(win().querySelector('.pc-sw-value-now').textContent, /^6/);
+assert.match(win().querySelector('.pc-sw-legend').textContent, /8 messages · 4 turns · changed 4×/);
+// the chart: a step line, one dot per change
+assert.ok(win().querySelector('.pc-sw-line'));
+assert.equal(win().querySelectorAll('.pc-sw-event').length, 4);
+// scrub back to message 2 (turn 1): 9, and its stage is the top one
+const slider = win().querySelector('.pc-sw-slider');
+slider.value = '2'; slider.dispatchEvent(new dom.window.Event('input'));
+assert.equal(win().querySelector('.pc-sw-bigval').textContent, '9');
+// try a message
+const tryIn = win().querySelector('.pc-sw-tryrow input');
+tryIn.value = 'hello'; tryIn.dispatchEvent(new dom.window.Event('input'));
+assert.match(win().querySelector('.pc-sw-tryout').textContent, /energy 6 → 5/);
+// set by hand, on the Range & output tab
+[...win().querySelectorAll('.pc-sw-tab')].find(t => t.textContent.startsWith('Range')).click();
+await tick();
+const setRow = [...win().querySelectorAll('.pc-field')].find(f => f.textContent.startsWith('Set it by hand'));
 setRow.querySelector('input').value = '3';
 [...setRow.querySelectorAll('.pc-btn')].find(b => b.textContent === 'Set now').click();
 await tick(80);
 assert.equal(chat.at(-1).extra.promptCanvasState[st.id][st.values[0].id], 3);
 assert.ok(saved > 0);
-assert.match(document.querySelector('.pc-inspector').textContent, /Right now3/);
+assert.match(win().querySelector('.pc-sw-value-now').textContent, /^3/);
+// Escape closes the window, not the panel
+document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+assert.equal(win(), null);
+assert.ok(UI.isOpen());
+assert.match(document.querySelector('.pc-inspector').textContent, /energy3/);
 
 // a wire with a condition
 const p = S.addNode(g, S.NODE_TYPES.PROMPT, 100, 500); p.content = 'hi';

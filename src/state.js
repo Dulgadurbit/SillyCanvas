@@ -20,6 +20,8 @@
  *   chat binding > character binding > activeGraphId
  */
 
+import { stagePortId, parseStatePort, ensureStageIds } from './statevals.js?v=0.13.0';
+
 export const MODULE = 'prompt-canvas';
 export const META_KEY = 'promptCanvasGraph';
 
@@ -87,6 +89,7 @@ export function newStateValue(name = 'energy') {
         output: 'text',
         rules: [{ id: uid('r'), when: 'turn', op: 'sub', amount: '1' }],
         stages: [],
+        stageDots: false,
     };
 }
 
@@ -96,7 +99,15 @@ export function newStateValue(name = 'energy') {
  */
 export function outPorts(node) {
     if (node?.type === NODE_TYPES.DECIDER) return deciderKeys(node);
-    if (node?.type === NODE_TYPES.STATE) return (node.values ?? []).map(v => ({ id: v.id, name: v.name || 'value' }));
+    if (node?.type === NODE_TYPES.STATE) {
+        // Each value has a dot; a value can also give each stage a dot of its own.
+        return (node.values ?? []).flatMap(v => [
+            { id: v.id, name: v.name || 'value' },
+            ...(v.stageDots ? ensureStageIds(v).stages ?? [] : []).map(st => ({
+                id: stagePortId(v, st), name: st.name || `${st.from ?? ''}\u2013${st.to ?? ''}`, stage: true, valueId: v.id,
+            })),
+        ]);
+    }
     return [];
 }
 export const hasPorts = (node) => node?.type === NODE_TYPES.DECIDER || node?.type === NODE_TYPES.STATE;
@@ -210,11 +221,23 @@ export function getGraph(id) {
  * something the UI can no longer express.
  */
 export function migrateGraph(graph) {
-    if (!graph || graph.migrated === 1) return graph;
-    for (const w of Object.values(graph.wires ?? {})) {
-        if (w.kind === WIRE_KINDS.SEQUENCE) w.kind = WIRE_KINDS.MERGE;
+    if (!graph || graph.migrated === 3) return graph;
+    if (!graph.migrated) {
+        for (const w of Object.values(graph.wires ?? {})) {
+            if (w.kind === WIRE_KINDS.SEQUENCE) w.kind = WIRE_KINDS.MERGE;
+        }
     }
-    graph.migrated = 1;
+    // 0.12 kept group membership in node.group, which the Lorebook block
+    // also uses for its own filter. Membership now lives in node.inGroup.
+    for (const n of Object.values(graph.nodes ?? {})) {
+        if (n.group && graph.groups?.[n.group] && n.inGroup === undefined) {
+            n.inGroup = n.group;
+            delete n.group;
+        }
+    }
+    // Stages get ids, so each can have a dot of its own.
+    for (const n of Object.values(graph.nodes ?? {})) if (n.type === NODE_TYPES.STATE) for (const v of n.values ?? []) ensureStageIds(v);
+    graph.migrated = 3;
     return graph;
 }
 
@@ -479,10 +502,22 @@ export function duplicateNode(graph, nodeId, { withInputs = false } = {}) {
     return copy;
 }
 
+/*
+ * Groups are blankets. An open group is a sheet on the canvas (its frame);
+ * whatever rests on it is in the group, and folding it gathers everything
+ * on it into one block. A group can be switched off as a whole: then nothing
+ * in it is sent and nothing passes through it.
+ *
+ * A block's group is node.inGroup. (node.group is the Lorebook block's own
+ * "only this lorebook group" filter, and must be left alone.)
+ */
+
+/** Smallest a blanket can be dragged to. */
+export const GROUP_MIN = { w: 220, h: 140 };
+
 /**
  * Fold blocks into a group: one block on the canvas, with the wires that
- * cross its edge showing on it. Only the drawing changes; the prompt is
- * built exactly as before. Output never goes in a group.
+ * cross its edge showing on it. Output never goes in a group.
  * @returns {object|null} the group
  */
 export function groupNodes(graph, ids, title = 'Group') {
@@ -493,26 +528,134 @@ export function groupNodes(graph, ids, title = 'Group') {
         id: uid('grp'),
         title,
         collapsed: true,
+        enabled: true,
         x: Math.min(...members.map(n => n.x)),
         y: Math.min(...members.map(n => n.y)),
         w: 260,
     };
     graph.groups[g.id] = g;
-    for (const n of members) n.group = g.id;
+    for (const n of members) n.inGroup = g.id;
     touchGraph(graph);
     return g;
 }
 
-/** Undo a group: its blocks stay where they are, just no longer folded together. */
+/** A new, empty, open blanket at a spot on the canvas. Put blocks on it to group them. */
+export function createBlanket(graph, x, y, { w = 560, h = 340, title = 'Group' } = {}) {
+    graph.groups ??= {};
+    const g = {
+        id: uid('grp'),
+        title,
+        collapsed: false,
+        enabled: true,
+        x: Math.round(x), y: Math.round(y), w: 260,
+        frame: { x: Math.round(x), y: Math.round(y), w, h },
+    };
+    graph.groups[g.id] = g;
+    touchGraph(graph);
+    return g;
+}
+
+/** Undo a group: its blocks stay where they are, just no longer grouped. */
 export function ungroup(graph, groupId) {
-    for (const n of Object.values(graph.nodes)) if (n.group === groupId) delete n.group;
+    for (const n of Object.values(graph.nodes)) if (n.inGroup === groupId) delete n.inGroup;
     if (graph.groups) delete graph.groups[groupId];
     touchGraph(graph);
 }
 
 /** The blocks in a group. */
 export function groupMembers(graph, groupId) {
-    return Object.values(graph.nodes).filter(n => n.group === groupId);
+    return Object.values(graph.nodes).filter(n => n.inGroup === groupId);
+}
+
+/** The group a block is in, if any. */
+export function groupOf(graph, node) {
+    return node?.inGroup ? graph.groups?.[node.inGroup] ?? null : null;
+}
+
+/** Whether a block sits in a group that is switched off. */
+export function inOffGroup(graph, node) {
+    return groupOf(graph, node)?.enabled === false;
+}
+
+/**
+ * The open blanket under a point: the smallest one, when blankets overlap,
+ * so a small blanket laid on a big one still gets what is put on it.
+ */
+export function blanketAt(graph, x, y) {
+    let best = null, area = Infinity;
+    for (const g of Object.values(graph.groups ?? {})) {
+        const f = g.frame;
+        if (g.collapsed || !f) continue;
+        if (x < f.x || x > f.x + f.w || y < f.y || y > f.y + f.h) continue;
+        const a = f.w * f.h;
+        if (a < area) { area = a; best = g; }
+    }
+    return best;
+}
+
+/**
+ * Put blocks on whatever blanket they rest on now, or take them off it.
+ * A block rests on a blanket when its middle is on it.
+ * @param {string[]} ids
+ * @param {(node) => number} heightOf  block height on screen
+ * @returns {boolean} whether anything changed
+ */
+export function settleOnBlankets(graph, ids, heightOf = () => 90) {
+    let changed = false;
+    for (const id of ids) {
+        const n = graph.nodes[id];
+        if (!n || n.type === NODE_TYPES.OUTPUT) continue;
+        // Blocks inside a folded group are out of sight and stay put.
+        if (n.inGroup && graph.groups?.[n.inGroup]?.collapsed) continue;
+        const g = blanketAt(graph, n.x + (n.w || 260) / 2, n.y + heightOf(n) / 2);
+        const next = g?.id;
+        if ((n.inGroup ?? undefined) !== next) {
+            if (next) n.inGroup = next; else delete n.inGroup;
+            changed = true;
+        }
+    }
+    if (changed) touchGraph(graph);
+    return changed;
+}
+
+/**
+ * Everything resting on a blanket joins it, and members that are no longer on
+ * it leave. Used when a blanket is folded, moved or resized.
+ */
+export function gatherBlanket(graph, groupId, heightOf = () => 90) {
+    const g = graph.groups?.[groupId];
+    if (!g?.frame) return false;
+    const ids = Object.values(graph.nodes)
+        .filter(n => n.inGroup === groupId || !n.inGroup || !graph.groups?.[n.inGroup]?.collapsed)
+        .map(n => n.id);
+    return settleOnBlankets(graph, ids, heightOf);
+}
+
+/** Switch a whole group on or off. The blocks keep their own switches. */
+export function setGroupEnabled(graph, groupId, on) {
+    const g = graph.groups?.[groupId];
+    if (!g) return;
+    if (on) delete g.enabled; else g.enabled = false;
+    touchGraph(graph);
+}
+
+/**
+ * The canvas as it is actually sent: blocks in a switched-off group, and
+ * every wire into or out of them, are left out, so nothing is sent from them
+ * and nothing passes through them. Returns the canvas itself when no group
+ * is off, so it is cheap to call everywhere.
+ */
+export function activeGraph(graph) {
+    if (!graph?.groups || !graph.nodes) return graph;
+    const off = new Set(Object.values(graph.groups).filter(g => g.enabled === false).map(g => g.id));
+    if (!off.size) return graph;
+    const gone = new Set(Object.values(graph.nodes).filter(n => n.inGroup && off.has(n.inGroup)).map(n => n.id));
+    if (!gone.size) return graph;
+    const nodes = {};
+    for (const [id, n] of Object.entries(graph.nodes)) if (!gone.has(id)) nodes[id] = n;
+    const wires = {};
+    for (const [id, w] of Object.entries(graph.wires ?? {})) if (!gone.has(w.from) && !gone.has(w.to)) wires[id] = w;
+    return { ...graph, nodes, wires, groupsOff: gone };
 }
 
 export function removeNode(graph, nodeId) {
@@ -572,6 +715,9 @@ export function connect(graph, fromId, toId, kind = WIRE_KINDS.APPEND, { port = 
         loop = { max: 3, stopWhenSame: true };
     }
     const wire = { id: uid('w'), from: fromId, to: toId, kind, ...(port ? { port } : {}), ...(loop ? { loop } : {}) };
+    // A stage's own dot switches its block on while the value is in that
+    // stage, so its wires start as Activate wires.
+    if (src.type === NODE_TYPES.STATE && port && parseStatePort(port).stageId) wire.mode = 'activate';
     graph.wires[wire.id] = wire;
     touchGraph(graph);
     return { ok: true, wire };

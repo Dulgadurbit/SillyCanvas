@@ -9,7 +9,7 @@
  * the message it was set at, so it goes if that message goes.
  */
 
-import { evaluate, holds } from './expr.js?v=0.12.0';
+import { evaluate, holds } from './expr.js?v=0.13.0';
 
 /** Where hand-set values live on a message: message.extra[NUDGE_KEY][blockId][valueId] = value */
 export const NUDGE_KEY = 'promptCanvasState';
@@ -72,17 +72,25 @@ function act(v, current, rule, vars) {
  * Replay one State block over the chat.
  * @param {object} node   the State block
  * @param {Array} chat    SillyTavern's chat array
- * @returns {{byId: Record<string, number|string>, byName: Record<string, number|string>, turn: number, log: Array}}
+ * @param {{timeline?: boolean}} [opts]  timeline: also keep every value after each message, for charts
+ * @returns {{byId: Record<string, number|string>, byName: Record<string, number|string>, turn: number, log: Array, timeline?: Array}}
+ *   log: one entry per change: {index, turn, valueId, ruleId, why, from, to}; index is the message number (1 = first)
  */
-export function computeState(node, chat = []) {
+export function computeState(node, chat = [], { timeline = false } = {}) {
     const values = (node.values ?? []).filter(v => v && v.id);
     const cur = {};
     for (const v of values) cur[v.id] = clampValue(v, startOf(v));
     const log = [];
+    const line = timeline ? [{ index: 0, turn: 0, values: { ...cur } }] : null;
     const varsOf = (turn, index) => {
         const o = { turn, messages: index };
         for (const v of values) if (v.name) o[v.name] = cur[v.id];
         return o;
+    };
+    const apply = (v, r, turn, index, why) => {
+        const from = cur[v.id];
+        cur[v.id] = clampValue(v, act(v, from, r, varsOf(turn, index)));
+        log.push({ index, turn, valueId: v.id, ruleId: r.id ?? null, why, from, to: cur[v.id] });
     };
     let turn = 0;
     let index = 0;
@@ -93,11 +101,9 @@ export function computeState(node, chat = []) {
         if (m.is_user) {
             turn++;
             for (const v of values) for (const r of v.rules ?? []) {
-                if (r.when === 'turn' || (r.when === 'every' && turn % Math.max(1, num(r.n, 1)) === 0)) {
-                    cur[v.id] = clampValue(v, act(v, cur[v.id], r, varsOf(turn, index)));
-                } else if (r.when === 'formula' && String(r.formula ?? '').trim() && holds(r.formula, varsOf(turn, index))) {
-                    cur[v.id] = clampValue(v, act(v, cur[v.id], r, varsOf(turn, index)));
-                }
+                if (r.when === 'turn') apply(v, r, turn, index, 'every turn');
+                else if (r.when === 'every' && turn % Math.max(1, num(r.n, 1)) === 0) apply(v, r, turn, index, `every ${Math.max(1, num(r.n, 1))} turns`);
+                else if (r.when === 'formula' && String(r.formula ?? '').trim() && holds(r.formula, varsOf(turn, index))) apply(v, r, turn, index, r.formula);
             }
         }
         for (const v of values) for (const r of v.rules ?? []) {
@@ -105,15 +111,19 @@ export function computeState(node, chat = []) {
             if ((r.who ?? 'any') !== 'any' && r.who !== who) continue;
             const hit = mentions(m.mes, r.terms, { negation: r.negation !== false });
             if (!hit) continue;
-            cur[v.id] = clampValue(v, act(v, cur[v.id], r, varsOf(turn, index)));
-            log.push({ index, valueId: v.id, why: `"${hit}"` });
+            apply(v, r, turn, index, `"${hit}"`);
         }
         const set = m.extra?.[NUDGE_KEY]?.[node.id];
-        if (set) for (const v of values) if (set[v.id] !== undefined) cur[v.id] = clampValue(v, set[v.id]);
+        if (set) for (const v of values) if (set[v.id] !== undefined) {
+            const from = cur[v.id];
+            cur[v.id] = clampValue(v, set[v.id]);
+            log.push({ index, turn, valueId: v.id, ruleId: null, why: 'set by hand', from, to: cur[v.id], byHand: true });
+        }
+        if (line) line.push({ index, turn, values: { ...cur } });
     }
     const byName = {};
     for (const v of values) if (v.name) byName[v.name] = cur[v.id];
-    return { byId: cur, byName, turn, log };
+    return { byId: cur, byName, turn, log, ...(line ? { timeline: line } : {}) };
 }
 
 /** The stage a number falls in, or null. Stages are checked top to bottom. */
@@ -128,13 +138,49 @@ export function stageFor(v, value) {
     return null;
 }
 
+/**
+ * What a stage sends: its own text, or the library prompt it is linked to.
+ * @param {(id: string) => string|null} [lookup]  a library prompt's text by id
+ */
+export function stageText(stage, lookup = () => null) {
+    if (!stage) return '';
+    if (stage.source === 'prompt' && stage.promptId) return String(lookup(stage.promptId) ?? '');
+    return String(stage.text ?? '');
+}
+
 /** What one value's output sends: its stage's text, its number, or its stage name. */
-export function valueOutput(v, value, sub = (t) => t) {
+export function valueOutput(v, value, sub = (t) => t, lookup = () => null) {
     const mode = v.output ?? 'text';
     if (mode === 'number') return String(value);
     const st = stageFor(v, value);
     if (mode === 'stage') return st?.name ? String(st.name) : '';
     if (v.kind === 'text') return String(value ?? '');
     if (!(v.stages ?? []).length) return String(value);
-    return st ? sub(String(st.text ?? '')).trim() : '';
+    return st ? sub(stageText(st, lookup)).trim() : '';
+}
+
+/*
+ * A value can give each of its stages its own output dot. Its port id is
+ * "<value id>:<stage id>". The dot is "on" while the value is in that stage;
+ * wired with Activate (the default) it switches a block on for that stage
+ * only, so any prompt, or a whole group of blocks, can be a stage.
+ */
+export const STAGE_PORT_SEP = ':';
+
+export function stagePortId(v, stage) {
+    return `${v.id}${STAGE_PORT_SEP}${stage.id}`;
+}
+
+/** {valueId, stageId} for a port id; stageId is null for the value's own dot. */
+export function parseStatePort(port) {
+    const s = String(port ?? '');
+    const at = s.indexOf(STAGE_PORT_SEP);
+    return at < 0 ? { valueId: s, stageId: null } : { valueId: s.slice(0, at), stageId: s.slice(at + 1) };
+}
+
+let stageSeq = 0;
+/** Give every stage an id, so it can have a dot and be wired. */
+export function ensureStageIds(v) {
+    for (const st of v?.stages ?? []) st.id ??= `s${Date.now().toString(36)}${(++stageSeq).toString(36)}`;
+    return v;
 }

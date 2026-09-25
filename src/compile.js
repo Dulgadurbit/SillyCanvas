@@ -22,12 +22,15 @@
  * no exceptions, because a graph you have to trace to predict is not a tool.
  */
 
-import { ctx, safe, NODE_TYPES, WIRE_KINDS, wiresInto, wiresOutOf, outputNode, togetherGroup, groupWires, deciderKeys, settings } from './state.js?v=0.12.0';
-import { stPrompt, MARKER_SOURCES } from './library.js?v=0.12.0';
-import { applySelect } from './select.js?v=0.12.0';
-import { toEntry, selectLore, loreMessages, blockBooks, stripFromWorldInfo } from './lore.js?v=0.12.0';
-import { computeState, valueOutput, stageFor } from './statevals.js?v=0.12.0';
-import { holds } from './expr.js?v=0.12.0';
+import { ctx, safe, NODE_TYPES, WIRE_KINDS, wiresInto, wiresOutOf, outputNode, togetherGroup, groupWires, deciderKeys, settings, activeGraph } from './state.js?v=0.13.0';
+import { stPrompt, MARKER_SOURCES, getPrompt } from './library.js?v=0.13.0';
+import { applySelect } from './select.js?v=0.13.0';
+import { toEntry, selectLore, loreMessages, blockBooks, stripFromWorldInfo } from './lore.js?v=0.13.0';
+import { computeState, valueOutput, stageFor, stageText, parseStatePort, stagePortId } from './statevals.js?v=0.13.0';
+
+/** A library prompt's text, for stages linked to one. */
+const libraryText = (id) => safe(() => getPrompt(id)?.content) ?? null;
+import { holds } from './expr.js?v=0.13.0';
 
 /* ------------------------------------------------------------------ */
 /* live context                                                        */
@@ -187,7 +190,7 @@ function withStates(graph, live) {
         if (k === 'state') { const v = find(vars, name); return v === undefined ? all : String(v); }
         if (k === 'stage') { const v = find(stages, name); return v === undefined ? all : String(v); }
         const def = find(texts, name);
-        return def ? valueOutput({ ...def, output: 'text' }, find(vars, name), base) : all;
+        return def ? valueOutput({ ...def, output: 'text' }, find(vars, name), base, libraryText) : all;
     }));
     // A view that reads through to the real context, so what the runner
     // changes on it later (AI answers, loop inputs) is still seen.
@@ -899,13 +902,36 @@ export function activationGate(graph, choice, cut, condOf, portOn = null, wireOk
     return gate;
 }
 
-/** What one State value sends along its output right now. Empty: nothing. */
+/**
+ * What one State dot sends right now. Empty: nothing. A value's dot sends its
+ * stage text (or number, or stage name); a stage's own dot sends that stage's
+ * text, and only while the value is in that stage.
+ */
 export function stateOutputFor(src, port, live) {
-    const v = (src?.values ?? []).find(x => x.id === port);
+    const { valueId, stageId } = parseStatePort(port);
+    const v = (src?.values ?? []).find(x => x.id === valueId);
     if (!v) return '';
-    const val = live?.states?.[src.id]?.byId?.[port];
+    const val = live?.states?.[src.id]?.byId?.[valueId];
     if (val === undefined) return '';
-    return valueOutput(v, val, live.substitute ?? (t => t));
+    const sub = live.substitute ?? (t => t);
+    if (stageId) {
+        const st = stageFor(v, val);
+        return st?.id === stageId ? sub(stageText(st, libraryText)).trim() : '';
+    }
+    return valueOutput(v, val, sub, libraryText);
+}
+
+/**
+ * Whether a State dot is "on", for Activate wires. A value's dot is on while
+ * it has something to send; a stage's dot while the value is in that stage,
+ * even when the stage itself sends no text.
+ */
+export function stateDotOn(src, port, live) {
+    const { valueId, stageId } = parseStatePort(port);
+    if (!stageId) return !!stateOutputFor(src, port, live);
+    const v = (src?.values ?? []).find(x => x.id === valueId);
+    const val = live?.states?.[src.id]?.byId?.[valueId];
+    return !!v && val !== undefined && stageFor(v, val)?.id === stageId;
 }
 
 /**
@@ -977,6 +1003,7 @@ function generateOutput(node, results, live) {
  * @returns {{messages: Array, warnings: Array<string>, trace: Array, pending: Array<string>}}
  */
 export function collect(graph, targetId, live, results = {}, decisions = {}, { raw = false } = {}) {
+    graph = activeGraph(graph);
     live = liveFor(graph, live);
     const warnings = [];
     /** The entries each Lorebook block sent, for its trace and Forward result wires. */
@@ -1023,7 +1050,7 @@ export function collect(graph, targetId, live, results = {}, decisions = {}, { r
         if (!conds.has(n.id)) conds.set(n.id, n.enabled === false ? { pass: false, why: 'switched off' } : evaluateCondition(n, live));
         return conds.get(n.id);
     };
-    const portOn = (src, port) => !!stateOutputFor(src, port, live);
+    const portOn = (src, port) => stateDotOn(src, port, live);
     const wireOk = (w) => {
         const src = graph.nodes[w.from];
         return wireHolds(w, live, src?.type === NODE_TYPES.STATE ? stateOutputFor(src, w.port, live) : undefined);
@@ -1148,7 +1175,14 @@ export function collect(graph, targetId, live, results = {}, decisions = {}, { r
             });
             entry.status = 'in';
             entry.why = bits.join(' \u00b7 ') || 'no values yet';
-            entry.decision = (node.values ?? []).filter(v => stateOutputFor(node, v.id, live)).map(v => v.id);
+            entry.decision = [
+                ...(node.values ?? []).filter(v => stateOutputFor(node, v.id, live)).map(v => v.id),
+                // and the stage dot of each value that has them, for the stage it is in
+                ...(node.values ?? []).filter(v => v.stageDots).flatMap(v => {
+                    const at = stageFor(v, st?.byId?.[v.id]);
+                    return at?.id ? [stagePortId(v, at)] : [];
+                }),
+            ];
             entry.state = st?.byId ?? {};
         }
         const ownFirstTrace = node.type === NODE_TYPES.GENERATE && node.contentPosition === 'before';
@@ -1289,6 +1323,7 @@ export function collect(graph, targetId, live, results = {}, decisions = {}, { r
  * @returns {Array<{role:string, content:string}>}
  */
 export function wirePreview(graph, wire, live, results = {}) {
+    graph = activeGraph(graph);
     const src = graph.nodes[wire?.from];
     if (!src) return [];
     let msgs;
@@ -1388,6 +1423,7 @@ export function readsIncoming(dec) {
  * Generate blocks outside this set are never called.
  */
 export function liveNodes(graph, live, results = {}, decisions = {}) {
+    graph = activeGraph(graph);
     const out = outputNode(graph);
     const seen = new Set();
     if (!out) return seen;
@@ -1401,7 +1437,7 @@ export function liveNodes(graph, live, results = {}, decisions = {}) {
     // better to run a block that ends up unused than to miss one that is used.
     const view = liveFor(graph, live);
     const gate = activationGate(graph, choice, cut, (n) => n.condition?.mode === 'probability' ? { pass: true } : evaluateCondition(n, view),
-        (src, port) => !!stateOutputFor(src, port, view),
+        (src, port) => stateDotOn(src, port, view),
         (w) => { const src = graph.nodes[w.from]; return wireHolds(w, view, src?.type === NODE_TYPES.STATE ? stateOutputFor(src, w.port, view) : undefined); });
     const stack = [out.id];
     // A block that only switches another on: follow its own Activate wires
@@ -1488,6 +1524,7 @@ export function cutNodes(graph, choice) {
 
 /** The Generate blocks upstream of a block that it has to wait for. */
 export function generateDeps(graph, nodeId) {
+    graph = activeGraph(graph);
     const deps = new Set();
     const seen = new Set();
     const walk = [nodeId];
@@ -1517,6 +1554,7 @@ export function generateDeps(graph, nodeId) {
  * request whose result is thrown away.
  */
 export function generateOrder(graph) {
+    graph = activeGraph(graph);
     const out = outputNode(graph);
     if (!out) return [];
 
@@ -1573,6 +1611,7 @@ export function generateOrder(graph) {
  * @returns {Map<string, number>}
  */
 export function emissionCounts(graph) {
+    graph = activeGraph(graph);
     const out = outputNode(graph);
     const counts = new Map();
     if (!out) return counts;
@@ -1611,6 +1650,7 @@ export function emissionCounts(graph) {
 
 /** Every node with a path to the Output block. */
 export function reachesOutput(graph) {
+    graph = activeGraph(graph);
     const out = outputNode(graph);
     const seen = new Set();
     if (!out) return seen;
@@ -1698,6 +1738,7 @@ function duplicateTitleWarnings(graph) {
  * @returns {Array<Array<object>>}
  */
 export function generateLevels(graph) {
+    graph = activeGraph(graph);
     const order = generateOrder(graph);
     if (!order.length) return [];
 
@@ -1765,6 +1806,7 @@ export function generateLevels(graph) {
  * @param {Record<string,string>} [options.results] answers from Generate blocks already run
  */
 export async function compile(graph, { dryRun = false, live = null, results = {}, decisions = {} } = {}) {
+    graph = activeGraph(graph);
     if (!graph) return fail('No canvas selected.');
     const out = outputNode(graph);
     if (!out) return fail('This canvas has no Output block.');

@@ -13,11 +13,14 @@
 
 import {
     NODE_TYPES, WIRE_KINDS, connect, disconnect, removeNode, touchGraph, wiresInto, deciderKeys, outPorts, hasPorts,
-    groupMembers, ungroup,
-} from './state.js?v=0.12.0';
-import { selectLabel } from './select.js?v=0.12.0';
+    groupMembers, ungroup, groupOf, inOffGroup, settleOnBlankets, gatherBlanket, setGroupEnabled, blanketAt, GROUP_MIN,
+} from './state.js?v=0.13.0';
+import { selectLabel } from './select.js?v=0.13.0';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/** Text that goes into innerHTML. Block titles and rules can come from a pasted or imported canvas. */
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 
 const WIRE_LABEL = {
     [WIRE_KINDS.MERGE]: 'merge',
@@ -213,13 +216,17 @@ export class Canvas {
     }
 
     fit() {
-        const nodes = Object.values(this.graph?.nodes ?? {});
-        if (!nodes.length) return;
+        const boxes = Object.values(this.graph?.nodes ?? {}).filter(n => !this.#folded(n)).map(n => ({ x: n.x, y: n.y, w: n.w || 260, h: 160 }));
+        for (const g of Object.values(this.graph?.groups ?? {})) {
+            if (g.collapsed) boxes.push({ x: g.x, y: g.y, w: g.w || 260, h: 160 });
+            else if (g.frame) boxes.push(g.frame);
+        }
+        if (!boxes.length) return;
         const pad = 80;
-        const minX = Math.min(...nodes.map(n => n.x)) - pad;
-        const minY = Math.min(...nodes.map(n => n.y)) - pad;
-        const maxX = Math.max(...nodes.map(n => n.x + (n.w || 260))) + pad;
-        const maxY = Math.max(...nodes.map(n => n.y + 160)) + pad;
+        const minX = Math.min(...boxes.map(b => b.x)) - pad;
+        const minY = Math.min(...boxes.map(b => b.y)) - pad;
+        const maxX = Math.max(...boxes.map(b => b.x + b.w)) + pad;
+        const maxY = Math.max(...boxes.map(b => b.y + b.h)) + pad;
         const rect = this.host.getBoundingClientRect();
         const zoom = Math.max(0.25, Math.min(1.2, Math.min(rect.width / (maxX - minX), rect.height / (maxY - minY))));
         const v = this.view;
@@ -316,9 +323,10 @@ export class Canvas {
         const frag = document.createDocumentFragment();
         this.reaching = this.#reaching();
         const groups = this.graph.groups ?? {};
-        // A group whose blocks have all gone goes too.
-        for (const gid of Object.keys(groups)) {
-            if (!Object.values(this.graph.nodes).some(n => n.group === gid)) delete groups[gid];
+        // A folded group whose blocks have all gone goes too. An open blanket
+        // may be empty: it is waiting for blocks to be put on it.
+        for (const [gid, g] of Object.entries(groups)) {
+            if ((g.collapsed || !g.frame) && !Object.values(this.graph.nodes).some(n => n.inGroup === gid)) delete groups[gid];
         }
         const nodes = Object.values(this.graph.nodes)
             .filter(n => !this.#folded(n))
@@ -338,13 +346,13 @@ export class Canvas {
 
     /** The folded group a block is hidden in, if any. */
     #folded(node) {
-        const g = node?.group ? this.graph.groups?.[node.group] : null;
+        const g = groupOf(this.graph, node);
         return g?.collapsed ? g : null;
     }
 
     /** Wires crossing a group's edge: what comes in and what goes out. */
     #groupEdges(gid) {
-        const inside = (id) => this.graph.nodes[id]?.group === gid;
+        const inside = (id) => this.graph.nodes[id]?.inGroup === gid;
         const ins = [], outs = [];
         for (const w of Object.values(this.graph.wires)) {
             if (w.kind === WIRE_KINDS.TOGETHER || w.loop) continue;
@@ -358,7 +366,7 @@ export class Canvas {
     #groupElement(g) {
         const members = groupMembers(this.graph, g.id).sort((a, b) => (a.y - b.y) || (a.x - b.x));
         const el = document.createElement('div');
-        el.className = `pc-node pc-node-group${this.selection?.kind === 'group' && this.selection.id === g.id ? ' pc-selected' : ''}`;
+        el.className = `pc-node pc-node-group${this.selection?.kind === 'group' && this.selection.id === g.id ? ' pc-selected' : ''}${g.enabled === false ? ' pc-off pc-group-is-off' : ''}`;
         el.dataset.group = g.id;
         el.style.left = `${g.x}px`;
         el.style.top = `${g.y}px`;
@@ -373,13 +381,13 @@ export class Canvas {
         const title = document.createElement('span');
         title.className = 'pc-node-title';
         title.textContent = g.title || 'Group';
-        const count = document.createElement('span');
-        count.className = 'pc-tok';
-        count.textContent = `${members.length} blocks`;
-        head.append(badge, title, count);
+        head.append(badge, title);
+        if (g.enabled === false) head.append(this.#offPill('This whole group is switched off. Nothing in it is sent, and nothing passes through it.'));
+        head.append(this.#groupButton('open', 'fa-up-right-and-down-left-from-center', 'Open the group: lay it out as a blanket you can put blocks on and take them off'));
+        head.append(this.#groupToggle(g));
         const body = document.createElement('div');
         body.className = 'pc-node-body';
-        body.textContent = members.map(n => n.title || 'Untitled').join(' \u00b7 ');
+        body.textContent = `${members.length} blocks: ${members.map(n => n.title || 'Untitled').join(' \u00b7 ')}`;
         el.append(head, body);
         const { ins, outs } = this.#groupEdges(g.id);
         const name = (id) => this.graph.nodes[id]?.title || 'Untitled';
@@ -391,7 +399,7 @@ export class Canvas {
         el.append(io);
         const hint = document.createElement('div');
         hint.className = 'pc-node-cond';
-        hint.textContent = 'double-click to open';
+        hint.textContent = g.enabled === false ? 'switched off \u2014 nothing goes through' : 'double-click to open';
         el.append(hint);
         for (const dir of ['in', 'out']) {
             const dot = document.createElement('div');
@@ -401,34 +409,125 @@ export class Canvas {
         return el;
     }
 
-    /** An open group: a labelled frame around its blocks, with a button to fold it again. */
+    /** Height of a block on screen, for deciding what rests where. */
+    heightOf(node) {
+        const el = this.#nodeEl(node?.id);
+        return el ? el.offsetHeight : 90;
+    }
+
+    /**
+     * An open group: a blanket on the canvas. Whatever rests on it is in the
+     * group. It grows to keep its blocks on it, has a corner to resize it,
+     * a switch for the whole group, and a button to fold it into one block.
+     */
     #groupFrame(g) {
         const members = groupMembers(this.graph, g.id);
-        if (!members.length) return;
-        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+        if (!g.frame) {
+            // A group from before blankets, or one just made from picked
+            // blocks: lay the blanket around its blocks.
+            if (!members.length) return;
+            let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+            for (const n of members) {
+                x0 = Math.min(x0, n.x); y0 = Math.min(y0, n.y);
+                x1 = Math.max(x1, n.x + (n.w || 260)); y1 = Math.max(y1, n.y + this.heightOf(n));
+            }
+            g.frame = { x: x0 - 24, y: y0 - 48, w: x1 - x0 + 48, h: y1 - y0 + 72 };
+        }
+        const f = g.frame;
+        // Blocks grow as you type; the blanket grows with them.
         for (const n of members) {
-            const el = this.nodeLayer.querySelector(`.pc-node[data-id="${CSS.escape(n.id)}"]`);
-            x0 = Math.min(x0, n.x); y0 = Math.min(y0, n.y);
-            x1 = Math.max(x1, n.x + (n.w || 260)); y1 = Math.max(y1, n.y + (el ? el.offsetHeight : 90));
+            const right = n.x + (n.w || 260) + 16, bottom = n.y + this.heightOf(n) + 16;
+            if (right > f.x + f.w) f.w = Math.round(right - f.x);
+            if (bottom > f.y + f.h) f.h = Math.round(bottom - f.y);
         }
         const frame = document.createElement('div');
-        frame.className = `pc-group-frame${this.selection?.kind === 'group' && this.selection.id === g.id ? ' pc-selected' : ''}`;
+        frame.className = `pc-group-frame${this.selection?.kind === 'group' && this.selection.id === g.id ? ' pc-selected' : ''}${g.enabled === false ? ' pc-group-is-off' : ''}${members.length ? '' : ' pc-group-empty'}`;
         frame.dataset.group = g.id;
-        frame.style.left = `${x0 - 18}px`;
-        frame.style.top = `${y0 - 40}px`;
-        frame.style.width = `${x1 - x0 + 36}px`;
-        frame.style.height = `${y1 - y0 + 58}px`;
+        frame.style.left = `${f.x}px`;
+        frame.style.top = `${f.y}px`;
+        frame.style.width = `${f.w}px`;
+        frame.style.height = `${f.h}px`;
         const head = document.createElement('div');
         head.className = 'pc-group-frame-head';
+        const icon = document.createElement('i');
+        icon.className = 'fa-solid fa-object-group';
         const t = document.createElement('span');
+        t.className = 'pc-group-frame-title';
         t.textContent = g.title || 'Group';
-        const fold = document.createElement('i');
-        fold.className = 'fa-solid fa-down-left-and-up-right-to-center pc-group-fold';
-        fold.dataset.action = 'collapse';
-        fold.title = 'Fold into one block';
-        head.append(t, fold);
+        const count = document.createElement('span');
+        count.className = 'pc-group-frame-count';
+        count.textContent = members.length ? `${members.length} block${members.length === 1 ? '' : 's'}` : 'empty \u2014 drag blocks onto it';
+        head.append(icon, t, count);
+        if (g.enabled === false) head.append(this.#offPill('This whole group is switched off. Nothing in it is sent, and nothing passes through it.'));
+        head.append(this.#groupToggle(g));
+        head.append(this.#groupButton('collapse', 'fa-down-left-and-up-right-to-center', 'Fold: everything on the blanket becomes one block'));
         frame.append(head);
+        const grip = document.createElement('div');
+        grip.className = 'pc-group-resize';
+        grip.dataset.action = 'resize';
+        grip.title = 'Drag to make the blanket bigger or smaller';
+        frame.append(grip);
         this.nodeLayer.prepend(frame);
+    }
+
+    #offPill(title) {
+        const off = document.createElement('span');
+        off.className = 'pc-off-pill';
+        off.textContent = 'OFF';
+        off.title = title;
+        return off;
+    }
+
+    #groupButton(action, icon, title) {
+        const b = document.createElement('i');
+        b.className = `fa-solid ${icon} pc-group-btn`;
+        b.dataset.action = action;
+        b.title = title;
+        return b;
+    }
+
+    #groupToggle(g) {
+        const off = g.enabled === false;
+        const t = document.createElement('div');
+        t.className = `pc-toggle fa-solid ${off ? 'fa-toggle-off pc-toggle-off' : 'fa-toggle-on pc-toggle-on'}`;
+        t.dataset.action = 'toggle';
+        t.title = off
+            ? 'The whole group is off \u2014 click to switch it on'
+            : 'Switch the whole group off: nothing in it is sent, and nothing passes through it';
+        return t;
+    }
+
+    /** Switch a whole group on or off. */
+    toggleGroup(gid) {
+        const g = this.graph.groups?.[gid];
+        if (!g) return;
+        setGroupEnabled(this.graph, gid, g.enabled === false);
+        this.render();
+        this.hooks.onChange?.();
+    }
+
+    /**
+     * Put blocks on the blanket they now rest on (or take them off one).
+     * Call after adding blocks somewhere, so a block dropped on an open
+     * group joins it.
+     */
+    settle(ids) {
+        if (!this.graph) return false;
+        return settleOnBlankets(this.graph, ids, (n) => this.heightOf(n));
+    }
+
+    /** While blocks are dragged, light up the blanket they would land on. */
+    #hoverBlanket(ids) {
+        let target = null;
+        for (const id of ids) {
+            const n = this.graph.nodes[id];
+            if (!n || n.type === NODE_TYPES.OUTPUT) continue;
+            target = blanketAt(this.graph, n.x + (n.w || 260) / 2, n.y + this.heightOf(n) / 2)?.id ?? null;
+            break;
+        }
+        for (const fr of this.nodeLayer.querySelectorAll('.pc-group-frame')) {
+            fr.classList.toggle('pc-group-drop', fr.dataset.group === target);
+        }
     }
 
     #paintMulti() {
@@ -449,9 +548,19 @@ export class Canvas {
         const g = this.graph.groups?.[gid];
         if (!g) return;
         if (collapsed) {
+            // Whatever rests on the blanket is the group.
+            if (g.frame) gatherBlanket(this.graph, gid, (n) => this.heightOf(n));
             const members = groupMembers(this.graph, gid);
-            g.x = Math.min(...members.map(n => n.x));
-            g.y = Math.min(...members.map(n => n.y));
+            if (!members.length) {
+                this.hooks.onToast?.('Put some blocks on the blanket first, then fold it.');
+                return;
+            }
+            g.x = g.frame ? g.frame.x : Math.min(...members.map(n => n.x));
+            g.y = g.frame ? g.frame.y : Math.min(...members.map(n => n.y));
+        } else if (g.frame) {
+            // The folded block may have been moved; the blanket comes along.
+            const dx = g.x - g.frame.x, dy = g.y - g.frame.y;
+            g.frame.x += dx; g.frame.y += dy;
         }
         g.collapsed = collapsed;
         touchGraph(this.graph);
@@ -467,6 +576,8 @@ export class Canvas {
         el.style.top = `${node.y}px`;
         el.style.width = `${node.w || 260}px`;
         if (node.enabled === false) el.classList.add('pc-off');
+        const groupOff = inOffGroup(this.graph, node);
+        if (groupOff) el.classList.add('pc-off', 'pc-group-off');
         if (node.type !== NODE_TYPES.NOTE && node.type !== NODE_TYPES.OUTPUT
             && this.reaching && !this.reaching.has(node.id)) {
             el.classList.add('pc-stranded');
@@ -503,7 +614,9 @@ export class Canvas {
             tok.title = 'About how many tokens this block adds (its own text, from the last preview)';
             head.append(tok);
         }
-        if (node.enabled === false) {
+        if (groupOff && node.enabled !== false) {
+            head.append(this.#offPill('Its group is switched off, so this block sends nothing and nothing passes through it.'));
+        } else if (node.enabled === false) {
             const off = document.createElement('span');
             off.className = 'pc-off-pill';
             off.textContent = 'OFF';
@@ -592,7 +705,7 @@ export class Canvas {
                 });
                 const shown = val === undefined ? `starts at ${v.start ?? 0}` : `${val}${v.kind !== 'text' && v.max !== '' && v.max != null ? `/${v.max}` : ''}${stage?.name ? ` \u00b7 ${stage.name}` : ''}`;
                 const rules = (v.rules ?? []).length;
-                list.append(this.#keyRow(v, `${shown}${rules ? ` \u00b7 ${rules} rule${rules === 1 ? '' : 's'}` : ''}${(v.stages ?? []).length ? ` \u00b7 ${v.stages.length} stages` : ''}`, !!stage?.text));
+                list.append(this.#keyRow(v, `${shown}${rules ? ` \u00b7 ${rules} rule${rules === 1 ? '' : 's'}` : ''}${(v.stages ?? []).length ? ` \u00b7 ${v.stages.length} stages${v.stageDots ? ' with dots' : ''}` : ''}`, !!(stage?.text || stage?.promptId)));
             }
             el.append(list);
         }
@@ -600,7 +713,7 @@ export class Canvas {
         if (node.type !== NODE_TYPES.DECIDER && node.type !== NODE_TYPES.STATE && node.condition && node.condition.mode !== 'always') {
             const cond = document.createElement('div');
             cond.className = 'pc-node-cond';
-            cond.innerHTML = `<i class="fa-solid fa-code-branch"></i> ${this.#conditionLabel(node.condition)}`;
+            cond.innerHTML = `<i class="fa-solid fa-code-branch"></i> ${esc(this.#conditionLabel(node.condition))}`;
             el.append(cond);
         }
 
@@ -611,8 +724,8 @@ export class Canvas {
             const where = name ?? (node.profileId ? node.profileId : 'same as the chat');
             const actual = node.type === NODE_TYPES.GENERATE ? (this.hooks.effectiveModel?.(node) ?? node.model) : node.model;
             model.innerHTML = actual
-                ? `<i class="fa-solid fa-microchip"></i> ${where} \u00b7 <b>${actual}</b>`
-                : `<i class="fa-solid fa-microchip"></i> ${where}`;
+                ? `<i class="fa-solid fa-microchip"></i> ${esc(where)} \u00b7 <b>${esc(actual)}</b>`
+                : `<i class="fa-solid fa-microchip"></i> ${esc(where)}`;
             model.title = node.model ? 'This block\u2019s own model.' : node.profileId ? 'The model this connection profile uses.' : 'Follows whatever model the chat is using right now.';
             el.append(model);
         }
@@ -633,12 +746,12 @@ export class Canvas {
                     tag.innerHTML = `<i class="fa-solid fa-arrow-down-1-9"></i> wave ${wave.wave} of ${wave.waves} \u00b7 waits for the wave before`;
                     tag.title = 'This waits, because a Generate block upstream feeds it.';
                 } else if (wave.willRunTogether) {
-                    tag.innerHTML = `<i class="fa-solid fa-bolt"></i> ${wave.tied ? 'tied to' : 'at the same time as'} ${wave.siblings.join(', ')}`;
+                    tag.innerHTML = `<i class="fa-solid fa-bolt"></i> ${wave.tied ? 'tied to' : 'at the same time as'} ${esc(wave.siblings.join(', '))}`;
                     tag.title = wave.tied
                         ? 'You tied these, so they go out together whatever the setting says.'
                         : 'These go out together because nothing wires one into another.';
                 } else {
-                    tag.innerHTML = `<i class="fa-solid fa-bolt-slash"></i> could go out with ${wave.siblings.join(', ')} \u2014 sending one at a time`;
+                    tag.innerHTML = `<i class="fa-solid fa-bolt-slash"></i> could go out with ${esc(wave.siblings.join(', '))} \u2014 sending one at a time`;
                     tag.title = 'Parallel sending is switched off. Tie these blocks, or switch it on in the status bar.';
                 }
                 el.append(tag);
@@ -666,12 +779,14 @@ export class Canvas {
             const chosen = this.trace?.get(node.id)?.decision ?? null;
             keys.forEach((k, i) => {
                 const port = document.createElement('div');
-                port.className = `pc-port pc-port-out pc-port-key${took(chosen, k.id) ? ' pc-port-chosen' : ''}${k === node.fallback ? ' pc-port-fallback' : ''}`;
+                port.className = `pc-port pc-port-out pc-port-key${took(chosen, k.id) ? ' pc-port-chosen' : ''}${k === node.fallback ? ' pc-port-fallback' : ''}${k.stage ? ' pc-port-stage' : ''}`;
                 port.dataset.node = node.id;
                 port.dataset.dir = 'out';
                 port.dataset.port = k.id;
                 port.style.left = `${100 * (i + 1) / (keys.length + 1)}%`;
-                port.title = node.type === NODE_TYPES.STATE ? `Drag to send "${k.name}"` : `Drag to wire the "${k.name}" path`;
+                const valueName = k.stage ? (node.values ?? []).find(v => v.id === k.valueId)?.name || 'the value' : '';
+                port.title = k.stage ? `Stage "${k.name}": drag onto a block to switch it on while ${valueName} is in this stage`
+                    : node.type === NODE_TYPES.STATE ? `Drag to send "${k.name}"` : `Drag to wire the "${k.name}" path`;
                 const tag = document.createElement('span');
                 tag.className = 'pc-port-keyname';
                 tag.textContent = k.name || 'key';
@@ -976,7 +1091,7 @@ export class Canvas {
             const isKey = hasPorts(srcNode);
             const chosen = isKey ? this.trace?.get(wire.from)?.decision : undefined;
             const untaken = isKey && chosen !== undefined && chosen !== null && !took(chosen, wire.port);
-            const offWire = this.graph.nodes[wire.from]?.enabled === false || this.graph.nodes[wire.to]?.enabled === false;
+            const offWire = [wire.from, wire.to].some(id => this.graph.nodes[id]?.enabled === false || inOffGroup(this.graph, this.graph.nodes[id]));
             const mode = !tie && (wire.mode === 'activate' || wire.mode === 'result') ? wire.mode : null;
             path.setAttribute('class', `pc-wire pc-wire-${wire.kind}${mode ? ` pc-wire-mode-${mode}` : ''}${wire.loop ? ' pc-wire-loop' : ''}${isKey ? ' pc-wire-key' : ''}${untaken ? ' pc-wire-untaken' : ''}${offWire ? ' pc-wire-off' : ''}${this.selection?.kind === 'wire' && this.selection.id === wire.id ? ' pc-selected' : ''}`);
 
@@ -1034,6 +1149,10 @@ export class Canvas {
     #bind() {
         const host = this.host;
 
+        // Where the pointer is on the canvas, so a paste lands under it.
+        host.addEventListener('mousemove', (e) => { if (this.graph) this.pointer = this.toGraph(e.clientX, e.clientY); });
+        host.addEventListener('mouseleave', () => { this.pointer = null; });
+
         host.addEventListener('wheel', (e) => {
             e.preventDefault();
             this.zoomBy(e.deltaY < 0 ? 1.1 : 1 / 1.1, e.clientX, e.clientY);
@@ -1043,7 +1162,7 @@ export class Canvas {
             if (!this.graph) return;
             const port = e.target.closest('.pc-port');
             const nodeEl = e.target.closest('.pc-node[data-id]');
-            const groupEl = e.target.closest('.pc-node-group, .pc-group-frame-head');
+            const groupEl = e.target.closest('.pc-node-group, .pc-group-frame-head, .pc-group-resize');
             const wireHit = e.target.closest('.pc-wire-hit') ?? e.target.closest('.pc-wire-label-loop');
 
             if (groupEl && e.button === 0 && !port) {
@@ -1051,12 +1170,21 @@ export class Canvas {
                 const g = this.graph.groups?.[gid];
                 if (!g) return;
                 e.preventDefault();
-                if (e.target.closest('[data-action="collapse"]')) { this.setCollapsed(gid, true); return; }
+                e.stopPropagation();
+                const action = e.target.closest('[data-action]')?.dataset.action;
+                if (action === 'collapse') { this.setCollapsed(gid, true); return; }
+                if (action === 'open') { this.setCollapsed(gid, false); return; }
+                if (action === 'toggle') { this.toggleGroup(gid); return; }
                 this.multi.clear();
                 this.select({ kind: 'group', id: gid });
                 const start = this.toGraph(e.clientX, e.clientY);
+                if (action === 'resize' && g.frame) {
+                    this.drag = { resize: gid, sx: start.x, sy: start.y, w: g.frame.w, h: g.frame.h, moved: false };
+                    return;
+                }
                 this.drag = {
                     group: gid, sx: start.x, sy: start.y, gx: g.x, gy: g.y, moved: false,
+                    fx: g.frame?.x, fy: g.frame?.y,
                     starts: groupMembers(this.graph, gid).map(n => [n.id, n.x, n.y]),
                 };
                 return;
@@ -1165,6 +1293,18 @@ export class Canvas {
                 });
                 return;
             }
+            if (this.drag?.resize) {
+                const p = this.toGraph(e.clientX, e.clientY);
+                const d = this.drag;
+                const g = this.graph.groups?.[d.resize];
+                if (!g?.frame) return;
+                d.moved = true;
+                g.frame.w = Math.max(GROUP_MIN.w, Math.round(d.w + p.x - d.sx));
+                g.frame.h = Math.max(GROUP_MIN.h, Math.round(d.h + p.y - d.sy));
+                const fr = this.nodeLayer.querySelector(`.pc-group-frame[data-group="${CSS.escape(g.id)}"]`);
+                if (fr) { fr.style.width = `${g.frame.w}px`; fr.style.height = `${g.frame.h}px`; }
+                return;
+            }
             if (this.drag?.group || this.drag?.several) {
                 const p = this.toGraph(e.clientX, e.clientY);
                 const d = this.drag;
@@ -1178,10 +1318,14 @@ export class Canvas {
                 }
                 if (d.group) {
                     const g = this.graph.groups?.[d.group];
-                    if (g) { g.x = d.gx + dx; g.y = d.gy + dy; }
+                    if (g) {
+                        g.x = d.gx + dx; g.y = d.gy + dy;
+                        if (g.frame && d.fx !== undefined) { g.frame.x = d.fx + dx; g.frame.y = d.fy + dy; }
+                    }
                 }
                 this.#drawNodes();
                 this.#drawWires();
+                if (!d.group) this.#hoverBlanket(d.several.map(([id]) => id));
                 return;
             }
             if (this.drag) {
@@ -1195,6 +1339,7 @@ export class Canvas {
                 const el = this.nodeLayer.querySelector(`.pc-node[data-id="${CSS.escape(node.id)}"]`);
                 if (el) { el.style.left = `${node.x}px`; el.style.top = `${node.y}px`; }
                 this.#drawWires();
+                this.#hoverBlanket([node.id]);
 
                 // Dragging a block out over the library means "save it there":
                 // into the folder under the pointer, or the first folder when
@@ -1260,10 +1405,30 @@ export class Canvas {
                 this.setMulti(hit);
                 return;
             }
+            if (this.drag?.resize) {
+                const d = this.drag;
+                this.drag = null;
+                if (d.moved) {
+                    gatherBlanket(this.graph, d.resize, (n) => this.heightOf(n));
+                    touchGraph(this.graph);
+                    this.hooks.onChange?.();
+                }
+                this.render();
+                return;
+            }
             if (this.drag?.group || this.drag?.several) {
                 const d = this.drag;
                 this.drag = null;
-                if (d.moved) { touchGraph(this.graph); this.hooks.onChange?.(); }
+                this.#hoverBlanket([]);
+                if (d.moved) {
+                    const g = d.group ? this.graph.groups?.[d.group] : null;
+                    // A blanket put down picks up what it now lies under;
+                    // blocks put down join the blanket they land on.
+                    if (g && !g.collapsed) gatherBlanket(this.graph, g.id, (n) => this.heightOf(n));
+                    else if (d.several) this.settle(d.several.map(([id]) => id));
+                    touchGraph(this.graph);
+                    this.hooks.onChange?.();
+                }
                 this.render();
                 return;
             }
@@ -1281,9 +1446,11 @@ export class Canvas {
                         this.hooks.onNodeDropOnFolder?.(node, drop.overFolder.dataset.folder || null);
                     }
                 } else if (drop.moved) {
+                    this.settle([drop.id]);
                     touchGraph(this.graph);
                     this.hooks.onChange?.();
                 }
+                this.#hoverBlanket([]);
                 this.render();
             }
             if (this.pan) {
@@ -1294,6 +1461,7 @@ export class Canvas {
         });
 
         host.addEventListener('dblclick', (e) => {
+            if (e.target.closest('[data-action]')) return;
             const groupEl = e.target.closest('.pc-node-group, .pc-group-frame-head');
             if (groupEl) {
                 const gid = groupEl.dataset.group ?? groupEl.closest('[data-group]')?.dataset.group;
@@ -1391,4 +1559,4 @@ export class Canvas {
     }
 }
 
-export { WIRE_LABEL, TYPE_LABEL };
+export { WIRE_LABEL, TYPE_LABEL, TYPE_ICON };

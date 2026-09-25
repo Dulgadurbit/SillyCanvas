@@ -26,9 +26,9 @@ const snapshot = (g) => JSON.stringify({ name: g.name, description: g.descriptio
 
 /** The shape of a canvas: which blocks and wires exist, where, and on or off. */
 function signature(g) {
-    const nodes = Object.values(g.nodes ?? {}).map(n => `${n.id}:${Math.round(n.x)}:${Math.round(n.y)}:${n.enabled !== false}:${n.group ?? ''}`).sort();
+    const nodes = Object.values(g.nodes ?? {}).map(n => `${n.id}:${Math.round(n.x)}:${Math.round(n.y)}:${n.enabled !== false}:${n.inGroup ?? ''}`).sort();
     const wires = Object.values(g.wires ?? {}).map(w => `${w.id}:${w.kind}:${w.port ?? ''}`).sort();
-    const groups = Object.values(g.groups ?? {}).map(x => `${x.id}:${x.collapsed ? 1 : 0}:${Math.round(x.x ?? 0)}:${Math.round(x.y ?? 0)}`).sort();
+    const groups = Object.values(g.groups ?? {}).map(x => `${x.id}:${x.collapsed ? 1 : 0}:${x.enabled !== false}:${Math.round(x.x ?? 0)}:${Math.round(x.y ?? 0)}:${x.frame ? [x.frame.x, x.frame.y, x.frame.w, x.frame.h].map(Math.round).join('/') : ''}`).sort();
     return `${nodes.join(',')}|${wires.join(',')}|${groups.join(',')}`;
 }
 
@@ -157,6 +157,23 @@ export function describe(a, b) {
     if (added.length > 1 || removed.length > 1) {
         return added.length && removed.length ? 'rebuild the canvas'
             : added.length ? `add ${added.length} blocks` : `delete ${removed.length} blocks`;
+    }
+    const ag = a.groups ?? {}, bg = b.groups ?? {};
+    const gname = (x) => `group "${x?.title || 'Group'}"`;
+    const newGroup = Object.keys(bg).find(id => !ag[id]);
+    const oldGroup = Object.keys(ag).find(id => !bg[id]);
+    if (newGroup && !added.length && !removed.length) return `make ${gname(bg[newGroup])}`;
+    if (oldGroup && !added.length && !removed.length) return `ungroup ${gname(ag[oldGroup])}`;
+    for (const id of Object.keys(bg)) {
+        const x = ag[id], y = bg[id];
+        if (!x) continue;
+        if ((x.enabled !== false) !== (y.enabled !== false)) return `switch ${y.enabled === false ? 'off' : 'on'} ${gname(y)}`;
+        if (!!x.collapsed !== !!y.collapsed) return `${y.collapsed ? 'fold' : 'open'} ${gname(y)}`;
+    }
+    const joined = Object.keys(bn).filter(id => an[id] && (an[id].inGroup ?? '') !== (bn[id].inGroup ?? ''));
+    if (joined.length === 1 && !added.length && !removed.length) {
+        const y = bn[joined[0]];
+        return y.inGroup ? `put ${name(y)} in ${gname(bg[y.inGroup])}` : `take ${name(y)} out of ${gname(ag[an[joined[0]].inGroup])}`;
     }
     if (added.length === 1 && !removed.length) return `add ${title(bn, added[0])}`;
     if (removed.length === 1 && !added.length) return `delete ${title(an, removed[0])}`;

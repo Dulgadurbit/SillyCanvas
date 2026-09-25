@@ -17,7 +17,7 @@
  * differently and the compiler knows to resolve them from live context.
  */
 
-import { ctx, settings, save, uid, safe } from './state.js?v=0.12.0';
+import { ctx, settings, save, uid, safe } from './state.js?v=0.13.0';
 
 export const ST_FOLDER_ID = '__sillytavern__';
 
@@ -108,6 +108,33 @@ export function createPrompt({ name, content = '', role = 'system', folderId = n
     return p;
 }
 
+/**
+ * A saved piece of a canvas: any block, several blocks, or a whole group,
+ * with every setting and the wires between them. Dropped on a canvas it is
+ * pasted there. (Plain prompts stay plain text, so they can be edited here.)
+ * @param {{name: string, clip: object, folderId?: string|null}} p  clip from makeClip()
+ */
+export function createPiece({ name, clip, folderId = null } = {}) {
+    const l = lib();
+    const p = {
+        id: uid('p'),
+        folderId: folderId ?? folders()[0].id,
+        name: name || 'Saved blocks',
+        kind: 'blocks',
+        role: '',
+        content: '',
+        clip,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+    };
+    l.prompts.push(p);
+    save();
+    return p;
+}
+
+/** Whether a library entry is a saved piece of canvas rather than prompt text. */
+export const isPiece = (p) => p?.kind === 'blocks' && !!p.clip;
+
 export function updatePrompt(id, patch) {
     const p = getPrompt(id);
     if (!p) return null;
@@ -126,7 +153,8 @@ export function searchLibrary(query) {
     const q = String(query || '').toLowerCase().trim();
     if (!q) return prompts();
     return prompts().filter(p =>
-        p.name.toLowerCase().includes(q) || String(p.content).toLowerCase().includes(q));
+        p.name.toLowerCase().includes(q) || String(p.content ?? '').toLowerCase().includes(q)
+        || (isPiece(p) && p.clip.nodes.some(n => `${n.title ?? ''} ${n.content ?? ''}`.toLowerCase().includes(q))));
 }
 
 /* ------------------------------------------------------------------ */

@@ -16,8 +16,8 @@
  *    recorded as the error, the run continues, and you see it in the trace.
  */
 
-import { ctx, safe, settings, save as saveSettings, NODE_TYPES, togetherGroup, loopWires, loopSection } from './state.js?v=0.12.0';
-import { compile, collect, generateOrder, generateLevels, gatherContext, evaluateCondition, liveNodes, generateDeps, textOf, picks } from './compile.js?v=0.12.0';
+import { ctx, safe, settings, save as saveSettings, NODE_TYPES, togetherGroup, loopWires, loopSection, activeGraph } from './state.js?v=0.13.0';
+import { compile, collect, generateOrder, generateLevels, gatherContext, evaluateCondition, liveNodes, generateDeps, textOf, picks } from './compile.js?v=0.13.0';
 
 /** The connection the chat itself is using, when a block does not name one. */
 function currentProfileId() {
@@ -474,6 +474,7 @@ export function describeCutoff(title, usage, finish) {
  * @returns {Promise<{plan: object, results: Record<string,string>, thoughts: Array}>}
  */
 export async function run(graph, { dryRun = false, signal = null, onStage = null, onResult = null } = {}) {
+    graph = activeGraph(graph);
     const live = await gatherContext({ dryRun });
     const results = {};
     const thoughts = [];
@@ -926,6 +927,7 @@ function batches(graph, wave, size, { autoParallel = true } = {}) {
  * spending a chat turn to find out.
  */
 export async function testBlock(graph, node, { signal = null } = {}) {
+    graph = activeGraph(graph);
     const live = await gatherContext({ dryRun: true });
     const built = collect(graph, node.id, live, {});
     const { messages, note } = shapeForApi(built.messages, node);
@@ -954,6 +956,7 @@ export async function testBlock(graph, node, { signal = null } = {}) {
  * approximation of it.
  */
 export async function previewBlock(graph, node) {
+    graph = activeGraph(graph);
     const live = await gatherContext({ dryRun: true });
     const built = collect(graph, node.id, live, {});
     const { messages, note } = shapeForApi(built.messages, node);
@@ -983,6 +986,7 @@ export function callCount(graph) {
  * path or a pass changes nothing.
  */
 export function maxCalls(graph) {
+    graph = activeGraph(graph);
     const passes = (n) => Math.max(1, Math.min(10, Math.round(Number(n?.repeat) || 1)));
     const gens = generateOrder(graph);
     let n = gens.reduce((sum, g) => sum + passes(g), 0);
@@ -996,6 +1000,7 @@ export function maxCalls(graph) {
 
 /** How many round trips that is, once independent blocks go out together. */
 export function roundTrips(graph) {
+    graph = activeGraph(graph);
     const waves = generateLevels(graph);
     const atOnce = Math.max(1, Number(safe(() => settings().concurrency)) || DEFAULT_AT_ONCE);
     return waves.reduce((n, w) => n + Math.ceil(w.length / atOnce), 0);

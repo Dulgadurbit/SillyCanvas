@@ -72,8 +72,12 @@ The wire's label shows the filter (`last 5 · user`), and **Show what it carries
 
 A **State** block keeps values that change as the chat goes on, and turns them into words. One block can hold many values, and each value has its own output dot.
 
+Double-click a State block (or **Open the State editor** in the side panel) to edit it in its own window. There you see each value as a bar with its stages, and a chart of the value across the whole chat, with the stage zones behind it and a dot wherever a rule changed it. Drag the slider to any message to see the value there and exactly what would be sent. **Try a message** shows what the next message would change before you send it. New blocks offer ready-made values to start from (energy that drains, hunger that grows, a mood).
+
 - **Rules** change a value: every turn, every few turns, when words appear (in your messages, the character's, or either; "didn't eat" does not count as eating), or when a formula holds. They add, subtract, set, multiply or reset, by a number or a formula.
-- **A stage table** turns a number into text. For example, Energy 10 to 7 sends nothing, 6 to 5 sends *"{{char}} is getting tired."*, 4 to 1 *"exhausted"*, 0 *"falls asleep"*. **Split into 5 stages** makes the rows for you.
+- **A stage table** turns a number into text. For example, Energy 10 to 7 sends nothing, 6 to 5 sends *"{{char}} is getting tired."*, 4 to 1 *"exhausted"*, 0 *"falls asleep"*. **Split the range into 2 to 5** makes the rows for you.
+- **Prompts as stages.** A stage can send a **library prompt** instead of its own text. It stays linked: edit the prompt (in the library, or right there in the stage) and the stage sends the new text. Or tick **Give each stage its own dot**: each stage gets a small diamond dot on the block. Wire it to any block (a prompt, a Generate block, a whole group) and that block is switched on only while the value is in that stage.
+- **Rules** read as sentences, and each shows how often it fired in this chat.
 - **Its output** sends the stage text, the number, or the stage name. When there is nothing to send, its wires carry nothing, and an Activate wire from it does not switch its block on.
 - **Anywhere in your text:** `{{state::energy}}` (the number), `{{stage::energy}}` (the stage name), `{{statetext::energy}}` (the stage text).
 - **Formulas** in Decider rules and wire conditions read the values by name: `energy <= 2 and turn > 5`. They can use `+ - * / %`, comparisons, `and or not`, `min max abs round clamp`, and `a ? b : c`.
@@ -86,7 +90,11 @@ Any wire can carry a condition: right-click it and choose **Add a condition**, o
 
 ## Groups
 
-Shift-click blocks, or Shift-drag a box on empty canvas, then choose **Group** (right-click, or the button in the side panel). The group folds into one block that shows what comes in and what goes out. Double-click it to open it; a frame shows its blocks, and double-clicking the frame's title folds it again. Drag a group to move all its blocks. Grouping only changes how the canvas looks: the prompt is built exactly the same. Deleting a group only ungroups it; the blocks stay.
+An open group is a **blanket**: a sheet on the canvas, and whatever rests on it is in the group. Drag a block onto it to add it (the blanket lights up), drag it off to take it out, and pull the corner to resize it. **Fold** it (the button on its title bar, or double-click the title) and everything on it becomes one block that shows what comes in and what goes out. Open it again with the button on that block, or double-click it.
+
+To make one: right-click empty canvas and choose **New group here** for an empty blanket, or Shift-click blocks (or Shift-drag a box on empty canvas) and choose **Group**. A block added on an open blanket, by dropping, pasting or double-clicking there, joins it.
+
+Every group has an **on/off switch**, on its title bar and on its folded block. A group switched off sends nothing, and nothing wired through it passes: it is as if its blocks and their wires were not there. The blocks keep their own switches for when you turn it back on. Otherwise grouping only changes how the canvas looks. Deleting a group only ungroups it; the blocks stay.
 
 ## Lorebook blocks
 
@@ -109,6 +117,7 @@ To route on which lore fired, wire the Lorebook block into a Decider and set the
 
 ## Working on the canvas
 
+- **Copy and paste** with Ctrl+C and Ctrl+V: a block, several picked blocks, or a whole group, with the wires between them. It pastes under the mouse, into the same canvas or any other one, and it lands on a blanket if you paste there. Ctrl+X cuts. The copy is plain text on your clipboard, so you can also paste it into another SillyTavern tab or send it to someone. Pasting ordinary text makes a new Prompt block with it.
 - **Duplicate** a block with Ctrl+D, its right-click menu, or the inspector. Ctrl+Shift+D also copies the wires coming into it.
 - **Hover or select** a block to light up everything that feeds it. Blocks that only switch it on get a dashed outline.
 - Each block shows roughly how many tokens it adds, from the last preview.
@@ -187,7 +196,7 @@ Click the palette button in the canvas header, or open the Silly Canvas section 
 |---|---|
 | **SillyTavern** | Follows your SillyTavern theme for backgrounds, text and font |
 | **Midnight** | Clean modern dark, rounded, deep shadows, dot grid |
-| **Blueprint** | Blue drafting paper: grid lines, sharp outlines, typewriter labels, right-angled wires |
+| **Blueprint** | Calm navy drafting paper: a faint grid, chalk-white right-angled wires, sharp outlines, typewriter labels |
 | **Parchment** | A light storybook page: cream paper, book serif, ink-brown lines, coloured headers |
 | **Neon** | Black and violet, glowing wires and edges, bold lines, soft round shapes |
 | **Terminal** | Green phosphor on black: monospace, square boxes, scanlines, right-angled wires |
@@ -212,6 +221,8 @@ A chat pin beats a character pin, and a character pin beats the default. Hover t
 ## The library
 
 Save prompts to the library to reuse them across canvases. Drag a block onto the library panel to save it, or drag a saved prompt onto the canvas to use it.
+
+Any block can be saved, not just prompts: a Generate block with its model and settings, a Decider with its rules, a State block with its values. So can several picked blocks or a whole group, with the wires between them. Use **Save to library** in the side panel or the right-click menu. Drag it from the library onto any canvas to use it again. Prompt and SillyTavern blocks are saved as plain prompt text, so you can still edit them in the library.
 
 ## Checking what was sent
 

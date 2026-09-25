@@ -49,7 +49,7 @@ assert.deepEqual(multis.at(-1).sort(), ['a', 'b', 'c']);
 // group them
 const g = S.groupNodes(graph, [...cv.multi, 'out'], 'Needs');
 assert.ok(g, 'grouped');
-assert.equal(graph.nodes.out.group, undefined, 'Output never goes in a group');
+assert.equal(graph.nodes.out.inGroup, undefined, 'Output never goes in a group');
 cv.setMulti([]);
 cv.render();
 assert.equal(nodeEl('a'), null, 'members are folded away');
@@ -88,10 +88,10 @@ const before2 = JSON.stringify(graph.groups);
 S.ungroup(graph, g.id);
 H.noteChange(graph);
 assert.deepEqual(graph.groups, {});
-assert.equal(graph.nodes.a.group, undefined);
+assert.equal(graph.nodes.a.inGroup, undefined);
 H.undo(graph);
 assert.equal(JSON.stringify(graph.groups), before2, 'undo restores the group');
-assert.equal(graph.nodes.a.group, g.id);
+assert.equal(graph.nodes.a.inGroup, g.id);
 
 // Delete on a selected group only ungroups: the blocks stay
 cv.select({ kind: 'group', id: g.id });

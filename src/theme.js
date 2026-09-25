@@ -12,7 +12,7 @@
  * always be got back, and a shared theme is a short piece of JSON.
  */
 
-import { settings, save, safe } from './state.js?v=0.12.0';
+import { settings, save, safe } from './state.js?v=0.13.0';
 
 /** The roles, in the order the editor lists them. */
 export const ROLES = [
@@ -83,12 +83,12 @@ export const PRESETS = {
     },
     blueprint: {
         name: 'Blueprint',
-        note: 'Drafting paper: a blue grid, sharp outlines, typewriter labels and right-angled wires.',
-        style: { shape: 'sharp', font: 'mono', grid: 'lines', wires: 'angled', weight: 'thin', header: 'tint', depth: 'flat' },
+        note: 'Drafting paper: calm navy, a faint grid, chalk-white wires, sharp outlines and typewriter labels.',
+        style: { shape: 'sharp', font: 'mono', grid: 'lines', wires: 'angled', weight: 'normal', header: 'tint', depth: 'flat' },
         colors: {
-            panel: '#0b2747', block: '#0f3561', canvas: '#12406f', border: '#8fb8e8', text: '#eef5ff', muted: '#a3c1e6',
-            flow: '#7fdbff', append: '#a6f29c', prepend: '#5ef0d8', generate: '#ffb3ef',
-            decider: '#ffc44d', warn: '#fff38a', error: '#ff8f8f',
+            panel: '#11263d', block: '#142d48', canvas: '#1c3b5b', border: '#5a7da2', text: '#e9eff6', muted: '#9fb3c9',
+            flow: '#f3f6fa', append: '#9fdcb0', prepend: '#7fcfdc', generate: '#e2a8dc',
+            decider: '#f2a25e', warn: '#e6e089', error: '#f0928f',
         },
     },
     parchment: {
