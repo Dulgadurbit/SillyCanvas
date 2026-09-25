@@ -17,7 +17,7 @@
  * differently and the compiler knows to resolve them from live context.
  */
 
-import { ctx, settings, save, uid, safe } from './state.js?v=0.13.0';
+import { ctx, settings, save, uid, safe } from './state.js?v=0.15.0';
 
 export const ST_FOLDER_ID = '__sillytavern__';
 

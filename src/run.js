@@ -16,8 +16,10 @@
  *    recorded as the error, the run continues, and you see it in the trace.
  */
 
-import { ctx, safe, settings, save as saveSettings, NODE_TYPES, togetherGroup, loopWires, loopSection, activeGraph } from './state.js?v=0.13.0';
-import { compile, collect, generateOrder, generateLevels, gatherContext, evaluateCondition, liveNodes, generateDeps, textOf, picks } from './compile.js?v=0.13.0';
+import { ctx, safe, settings, save as saveSettings, NODE_TYPES, togetherGroup, loopWires, loopSection, activeGraph } from './state.js?v=0.15.0';
+import { compile, collect, generateOrder, generateLevels, gatherContext, evaluateCondition, liveNodes, generateDeps, textOf, picks, wireHolds } from './compile.js?v=0.15.0';
+import { plannedSaves, writeSaves, mirrorToLorebook } from './memory.js?v=0.15.0';
+import { applySelect } from './select.js?v=0.15.0';
 
 /** The connection the chat itself is using, when a block does not name one. */
 function currentProfileId() {
@@ -512,6 +514,9 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
      * Ask one Generate block its question.
      * @returns {Promise<{node: object, ok: boolean, error?: string}|null>}
      */
+    /** Generate block id -> the titles of the blocks it went out with, at the same time. */
+    const withOthers = {};
+
     async function ask(gen, { retries = 1 } = {}) {
         if (signal?.aborted) return { node: gen, ok: false, aborted: true, error: 'stopped' };
         if (!evaluateCondition(gen, live).pass) { skipped.add(gen.id); return null; }
@@ -600,6 +605,7 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
             usage: reply?.usage ?? null,
             finish: reply?.finish ?? null,
             cutoff: reply ? describeCutoff(gen.title, reply.usage, reply.finish) : null,
+            together: withOthers[gen.id]?.length ? [...withOthers[gen.id]] : null,
         };
         if (at === -1) thoughts.push(entry); else thoughts[at] = entry;
         safe(() => onResult?.(entry));
@@ -727,6 +733,7 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
         if ((parallel || tiedHere) && wave.length > 1) {
             let outcomes = [];
             for (const batch of batches(graph, wave, atOnce, { autoParallel: parallel })) {
+                for (const g of batch) withOthers[g.id] = batch.filter(x => x !== g).map(x => x.title || 'Generate');
                 outcomes.push(...await Promise.all(batch.map(g => ask(g, { retries: 1 }))));
             }
 
@@ -738,6 +745,7 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
                 console.warn(`[prompt-canvas] ${stragglers.length} block(s) failed in parallel; retrying one at a time`);
                 for (const gen of stragglers) {
                     done--;
+                    withOthers[gen.id] = null;        // this time it goes alone
                     const again = await ask(gen, { retries: 0 });
                     if (again?.aborted) break;
                     if (again && !again.ok) failures.push({ title: gen.title, error: again.error });
@@ -777,7 +785,21 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
         safe(() => { settings().concurrency = 1; saveSettings(); });
         throttled = true;
     }
-    return { plan, results, thoughts, failures, cutoffs, rescued, throttled };
+
+    // Answers saved into Memory blocks land now, after the send is built, on
+    // the message this send answers. A swipe saves over its own earlier save.
+    const saves = safe(() => plannedSaves(graph, results, live, { applySelect, wireHolds })) ?? [];
+    const saveProblems = [];
+    if (saves.length) {
+        safe(() => writeSaves(saves, live.chat ?? []));
+        for (const sv of saves) {
+            if (!sv.node.lore?.on) continue;
+            const r = await mirrorToLorebook(sv.node, sv.text).catch(err => ({ ok: false, reason: describeError(err) }));
+            if (!r.ok) saveProblems.push(`"${sv.node.title}" could not be kept in its lorebook: ${r.reason}`);
+        }
+        if (saves.some(sv => sv.node.lore?.on)) safe(() => saveSettings());     // the entry it wrote, to find it again
+    }
+    return { plan, results, thoughts, failures, cutoffs, rescued, throttled, saves, saveProblems };
 }
 
 /**

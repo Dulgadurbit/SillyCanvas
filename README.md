@@ -39,6 +39,7 @@ Blocks are read from top to bottom. If you want something earlier in the prompt,
 | **Generate** | Asks a model something before the reply is written. What is wired into it is the question. Its answer goes on to the blocks below it, and its inputs do not. |
 | **Decider** | A router. Each output has its own rules; every output that matches fires (or only the first, or the AI picks, or by chance). Blocks on paths that were not taken are skipped and cost nothing. |
 | **State** | Values that change as the chat goes on (energy, hunger, a level, a mood), with rules and a stage table that turns each into words. See below. |
+| **Memory** | Prose the canvas remembers from message to message. Generate blocks save their answers into it; it is sent like a Prompt block and can also be kept in a lorebook entry. See below. |
 | **Output** | The final prompt. Everything wired into it is sent. |
 | **Note** | For you. Never sent. |
 
@@ -84,6 +85,24 @@ Double-click a State block (or **Open the State editor** in the side panel) to e
 
 The values are worked out again from the chat every time, so swiping, regenerating or deleting a message never counts a turn twice. **Set now** changes a value by hand; it is kept on the latest message, so it goes if that message goes.
 
+## Memory blocks
+
+A **Memory** block is prose the canvas remembers. It starts with the text you give it, and it is sent like a Prompt block. Wire a Generate block into it and that block's answer is **saved** into it (the wire shows *save*). The saved text is what the memory sends from the next message on. When the wire points back up the canvas, it is drawn round the side like a loop.
+
+This is how the canvas keeps things between messages. A few examples:
+
+- **A background cast.** A memory holds where each side character is and what they are doing. A cheap Generate block reads it and the chat, and saves the updated cast back into it every few turns (set a condition on the Generate block, for example every 3 turns). The reply only gets the cast when you wire the memory into it, or only when a condition says so.
+- **Generated lore.** Where are they now? → five facts about that place → saved into a memory that adds to the end, kept in the lorebook "World lore" with the place names as keywords. SillyTavern then brings the facts up whenever the place is mentioned.
+- **A running summary**, rewritten every ten turns.
+
+**When an answer is saved**, it can replace the text, be added to the end, or be added keeping only the last few paragraphs. A save wire can have a *Send what?* filter (keep only the text between `<cast>` tags) and a condition (only save when…), like any wire.
+
+**Swipe-safe.** A save is kept on the message the send answered, so a send always reads the memory as it was before that message. Swiping or regenerating a reply reads the same text again and saves over its own earlier save, and deleting a message takes its saves with it. The side panel shows what the memory holds right now, every save in the chat, and lets you **Set now** by hand.
+
+**Quickest way:** on a Generate block, **Save its answers…** (in its panel or right-click menu) makes a Memory block beside it, already wired to save and set to keep a lorebook entry. Pick the lorebook and keywords and you are done.
+
+**Also keep it in a lorebook entry:** choose a lorebook, an entry title and keywords. Every save rewrites that one entry with the memory's latest text, so it never piles up copies. The entry does not change back when you delete messages; **Write it there now** brings it back in line.
+
 ## Conditions on wires
 
 Any wire can carry a condition: right-click it and choose **Add a condition**, or use **Only when** in its settings. The wire then lets its text through only while the condition holds, for example only when `energy <= 1`, only when its text mentions a sword, or only after turn 10. On an Activate wire, the block it points at stays off while the condition fails. The condition shows on the wire's label.
@@ -94,7 +113,9 @@ An open group is a **blanket**: a sheet on the canvas, and whatever rests on it 
 
 To make one: right-click empty canvas and choose **New group here** for an empty blanket, or Shift-click blocks (or Shift-drag a box on empty canvas) and choose **Group**. A block added on an open blanket, by dropping, pasting or double-clicking there, joins it.
 
-Every group has an **on/off switch**, on its title bar and on its folded block. A group switched off sends nothing, and nothing wired through it passes: it is as if its blocks and their wires were not there. The blocks keep their own switches for when you turn it back on. Otherwise grouping only changes how the canvas looks. Deleting a group only ungroups it; the blocks stay.
+**Wiring a folded group:** drag from its bottom dot to wire a block inside it out, and drop a wire onto the group (or its top dot) to wire something in. The block inside is picked for you when there is one obvious one: the block nothing else in the group feeds (for wires in), or the one that feeds nothing else in it (for wires out). Otherwise a small menu asks. In the group's panel, **Wires in go to** and **Wires out leave from** set it once.
+
+Every group has an **on/off switch**, on its title bar and on its folded block. A group switched off sends nothing, and nothing wired through it passes: it is as if its blocks and their wires were not there. The blocks keep their own switches for when you turn it back on. Otherwise grouping only changes how the canvas looks. **Deleting** a group (Delete key, its panel or its right-click menu) deletes it with its blocks; **Ungroup** keeps the blocks. Ctrl+Z brings a delete back, and **Ask before deleting blocks and groups** in the extension settings adds a question first.
 
 ## Lorebook blocks
 
@@ -142,7 +163,7 @@ Each Generate block can use its own connection profile and model. If you leave i
 
 While the blocks run, their answers appear at the bottom of the chat, each one labelled with the block that wrote it. When the reply arrives they fold away under it. Open **What it was asked** on any answer to see the exact messages that block was sent.
 
-Generate blocks that don't depend on each other are sent at the same time. If your provider refuses that, Silly Canvas switches to one at a time and tells you.
+Generate blocks that don't depend on each other are sent at the same time. If your provider refuses that, Silly Canvas switches to one at a time and tells you. Answers that went out together are marked under the reply with a ⚡ badge naming the others.
 
 ## Loops
 
@@ -222,7 +243,7 @@ A chat pin beats a character pin, and a character pin beats the default. Hover t
 
 Save prompts to the library to reuse them across canvases. Drag a block onto the library panel to save it, or drag a saved prompt onto the canvas to use it.
 
-Any block can be saved, not just prompts: a Generate block with its model and settings, a Decider with its rules, a State block with its values. So can several picked blocks or a whole group, with the wires between them. Use **Save to library** in the side panel or the right-click menu. Drag it from the library onto any canvas to use it again. Prompt and SillyTavern blocks are saved as plain prompt text, so you can still edit them in the library.
+Entries are coloured by block type, the same colours as on the canvas. Any block can be saved, not just prompts: a Generate block with its model and settings, a Decider with its rules, a State block with its values. So can several picked blocks or a whole group, with the wires between them. Use **Save to library** in the side panel or the right-click menu. Drag it from the library onto any canvas to use it again. Prompt and SillyTavern blocks are saved as plain prompt text, so you can still edit them in the library.
 
 ## Checking what was sent
 

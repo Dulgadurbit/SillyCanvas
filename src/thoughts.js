@@ -11,7 +11,7 @@
  * later turn — only the canvas decides what gets sent.
  */
 
-import { ctx, safe } from './state.js?v=0.13.0';
+import { ctx, safe } from './state.js?v=0.15.0';
 
 const KEY = 'promptCanvas';
 
@@ -46,6 +46,7 @@ export function attachThoughts(messageId, thoughts) {
             finish: t.finish ?? null,
             decision: t.decision ?? null,
             cutoff: t.cutoff ?? null,
+            together: Array.isArray(t.together) && t.together.length ? t.together : null,
         })),
     };
     safe(() => c.saveChat());
@@ -146,7 +147,17 @@ function thoughtElement(t, { open = false, pending = false, prompt = t.prompt ??
     arrow.className = pending ? 'fa-solid fa-spinner fa-spin pc-thought-arrow'
         : t.decision ? 'fa-solid fa-code-fork pc-thought-arrow'
         : 'fa-solid fa-chevron-right pc-thought-arrow';
-    summary.append(arrow, label, meta);
+    summary.append(arrow, label);
+    // Went out at the same time as other blocks: say so, and with which.
+    if (Array.isArray(t.together) && t.together.length) {
+        const tog = document.createElement('span');
+        tog.className = 'pc-thought-together';
+        tog.innerHTML = '<i class="fa-solid fa-bolt"></i> ';
+        tog.append(`with ${t.together.length === 1 ? t.together[0] : `${t.together.length} others`}`);
+        tog.title = `Sent at the same time as ${t.together.join(', ')}`;
+        summary.append(tog);
+    }
+    summary.append(meta);
 
     const body = document.createElement('div');
     body.className = 'pc-thought-body';

@@ -93,9 +93,20 @@ H.undo(graph);
 assert.equal(JSON.stringify(graph.groups), before2, 'undo restores the group');
 assert.equal(graph.nodes.a.inGroup, g.id);
 
-// Delete on a selected group only ungroups: the blocks stay
-cv.select({ kind: 'group', id: g.id });
-cv.deleteSelection();
-assert.ok(graph.nodes.a && graph.nodes.b && graph.nodes.c);
+// Delete on a selected group deletes it with its blocks (Ungroup keeps them).
+// With "ask before deleting" on, a No keeps everything.
+let answer = false;
+const asked = [];
+const cv2 = new Canvas(document.getElementById('host'), { onChange() {}, confirmDelete: async (what) => { asked.push(what); return answer; } });
+cv2.setGraph(graph);
+cv2.render();
+cv2.select({ kind: 'group', id: g.id });
+assert.equal(await cv2.deleteSelection(), false);
+assert.match(asked[0], /the group "Needs" and its 3 blocks/);
+assert.ok(graph.nodes.a && graph.groups[g.id], 'said no: nothing gone');
+answer = true;
+assert.equal(await cv2.deleteSelection(), true);
+assert.ok(!graph.nodes.a && !graph.nodes.b && !graph.nodes.c, 'the blocks went with it');
+assert.ok(graph.nodes.sys && graph.nodes.out, 'the rest stays');
 assert.deepEqual(graph.groups, {});
 console.log('groups: ok');

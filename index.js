@@ -16,12 +16,12 @@
  * generation is worse than one that does nothing.
  */
 
-import { settings, save, resolveGraph, ctx, safe } from './src/state.js?v=0.13.0';
-import { run, callCount } from './src/run.js?v=0.13.0';
-import * as UI from './src/ui.js?v=0.13.0';
-import { applyTheme } from './src/theme.js?v=0.13.0';
-import { renderThemeEditor } from './src/theme-editor.js?v=0.13.0';
-import { renderThoughts, attachThoughts, repaintAll, livePanel } from './src/thoughts.js?v=0.13.0';
+import { settings, save, resolveGraph, ctx, safe } from './src/state.js?v=0.15.0';
+import { run, callCount } from './src/run.js?v=0.15.0';
+import * as UI from './src/ui.js?v=0.15.0';
+import { applyTheme } from './src/theme.js?v=0.15.0';
+import { renderThemeEditor } from './src/theme-editor.js?v=0.15.0';
+import { renderThoughts, attachThoughts, repaintAll, livePanel } from './src/thoughts.js?v=0.15.0';
 
 const MODULE = 'prompt-canvas';
 let lastRun = null;
@@ -71,7 +71,7 @@ async function build(dryRun) {
         if (!dryRun) { livePanel.clear(); pendingThoughts = null; }
         const abort = dryRun ? null : new AbortController();
         currentAbort = abort;
-        const { plan, thoughts, failures, cutoffs, aborted, rescued, throttled } = await run(graph, {
+        const { plan, thoughts, failures, cutoffs, aborted, rescued, throttled, saveProblems } = await run(graph, {
             dryRun,
             signal: abort?.signal ?? null,
             onStage: (node) => { progress.running(node.title); safe(() => livePanel.running(node)); },
@@ -114,6 +114,7 @@ async function build(dryRun) {
             safe(() => paintThrottle());
         }
 
+        for (const p of saveProblems ?? []) warn(p);
         for (const f of failures ?? []) {
             warn(`"${f.title}" failed and added nothing to this prompt. ${f.error}`);
         }
@@ -303,6 +304,13 @@ function addLauncher() {
                     <div class="pc-settings-hint">
                         Tinted while the canvas is armed. Click to open, right-click to arm or disarm.
                     </div>
+                    <label class="checkbox_label" for="pc-confirm-del">
+                        <input id="pc-confirm-del" type="checkbox">
+                        <span>Ask before deleting blocks and groups on the canvas</span>
+                    </label>
+                    <div class="pc-settings-hint">
+                        Off: they go at once, and Ctrl+Z brings them back.
+                    </div>
                     <div class="pc-settings-sub"><b>Theme</b></div>
                     <div id="pc-theme-editor"></div>
                     <div id="pc-open-btn" class="menu_button menu_button_icon">
@@ -327,6 +335,13 @@ function addLauncher() {
             settings().ui.sendbarButton = sbo.checked;
             save();
             addSendbarButton();
+        });
+        const cdel = block.querySelector('#pc-confirm-del');
+        cdel.checked = !!safe(() => settings().ui?.confirmDelete);
+        cdel.addEventListener('change', () => {
+            settings().ui ??= {};
+            settings().ui.confirmDelete = cdel.checked;
+            save();
         });
         paintThrottle();
         block.querySelector('#pc-unthrottle').addEventListener('click', () => {

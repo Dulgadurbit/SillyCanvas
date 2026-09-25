@@ -1073,6 +1073,9 @@
 
 /* ---- State block ---- */
 .pc-node-state { --pc-type: var(--pc-warn); }
+.pc-node-memory { --pc-type: var(--pc-append); }
+.pc-node-memory .pc-node-body { white-space: pre-wrap; }
+.pc-wire-save { stroke: var(--pc-append); stroke-dasharray: 2 5; stroke-linecap: round; }
 .pc-state-now { font-size: 1.05em; }
 .pc-state-rule { display: flex; flex-direction: column; gap: 4px; }
 .pc-state-stage { border-left: 3px solid color-mix(in srgb, var(--pc-text) 15%, transparent); padding: 4px 0 4px 8px; margin: 6px 0; display: flex; flex-direction: column; gap: 4px; }
@@ -1085,9 +1088,11 @@
 .pc-node-group { --pc-type: var(--pc-muted); border-style: double; border-width: calc(var(--pc-bw) + 2px); cursor: grab; }
 .pc-node-group .pc-node-body { opacity: 0.8; }
 .pc-group-io { white-space: normal; }
-.pc-gport { position: absolute; left: 50%; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: var(--pc-muted); border: 2px solid var(--pc-panel-solid); pointer-events: none; }
-.pc-gport-in { top: -8px; }
-.pc-gport-out { bottom: -8px; background: var(--pc-flow); }
+.pc-gport { position: absolute; left: 50%; width: 14px; height: 14px; margin-left: -7px; border-radius: 50%; background: var(--pc-muted); border: 2px solid var(--pc-panel-solid); cursor: crosshair; z-index: 2; }
+.pc-gport:hover { transform: scale(1.3); }
+.pc-node-group.pc-link-target { box-shadow: 0 0 0 3px var(--pc-flow); }
+.pc-gport-in { top: -9px; }
+.pc-gport-out { bottom: -9px; background: var(--pc-flow); }
 /* An open group is a blanket: a tinted sheet that blocks rest on. */
 .pc-group-frame {
     position: absolute; pointer-events: none;
@@ -1320,3 +1325,32 @@
     .pc-sw-body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
     .pc-sw-side { border-right: none; border-bottom: 1px solid color-mix(in srgb, var(--pc-text) 12%, transparent); max-height: 32vh; }
 }
+
+/* ---- Memory block ---- */
+.pc-mem-now { white-space: pre-wrap; max-height: 220px; overflow-y: auto; }
+.pc-mem-hist { display: flex; flex-direction: column; gap: 4px; max-height: 200px; overflow-y: auto; }
+.pc-mem-hrow { font-size: 0.86em; padding: 4px 8px; border-radius: var(--pc-r-sm); background: color-mix(in srgb, var(--pc-text) 5%, transparent); }
+.pc-mem-hrow b { color: var(--pc-muted); font-weight: 600; margin-right: 6px; }
+.pc-mem-lore { padding: 8px 10px; border-radius: var(--pc-r); border: 1px dashed color-mix(in srgb, var(--pc-text) 20%, transparent); display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.pc-thought-together {
+    font-size: 0.8em; padding: 0 7px; border-radius: 999px; white-space: nowrap;
+    color: var(--pc-generate, #d48fe0); border: 1px solid color-mix(in srgb, var(--pc-generate, #d48fe0) 45%, transparent);
+    background: color-mix(in srgb, var(--pc-generate, #d48fe0) 12%, transparent);
+}
+
+.pc-menu-item.pc-menu-likely { font-weight: 600; }
+.pc-menu-sub { font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.6; padding: 6px 12px 2px; }
+
+/* ---- library and block chips coloured by block type, as on the canvas ---- */
+.pc-lib-t-prompt { --pc-type: var(--pc-flow); }
+.pc-lib-t-st, .pc-lib-t-injection, .pc-lib-t-lorebook { --pc-type: var(--pc-prepend); }
+.pc-lib-t-history, .pc-lib-t-memory { --pc-type: var(--pc-append); }
+.pc-lib-t-generate { --pc-type: var(--pc-generate); }
+.pc-lib-t-decider { --pc-type: var(--pc-decider); }
+.pc-lib-t-state, .pc-lib-t-note { --pc-type: var(--pc-warn); }
+.pc-lib-t-group, .pc-lib-t-several { --pc-type: var(--pc-text); }
+.pc-lib-item[class*="pc-lib-t-"] { box-shadow: inset 3px 0 0 color-mix(in srgb, var(--pc-type) 75%, transparent); }
+.pc-lib-item[class*="pc-lib-t-"] > i:first-child,
+.pc-block-chip[class*="pc-lib-t-"] > i:first-child { color: var(--pc-type); opacity: 1; }
+.pc-block-chip[class*="pc-lib-t-"] { border-color: color-mix(in srgb, var(--pc-type) 45%, transparent); }
+.pc-block-chip[class*="pc-lib-t-"]:hover { background: color-mix(in srgb, var(--pc-type) 12%, transparent); }

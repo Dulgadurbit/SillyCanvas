@@ -20,7 +20,7 @@
  *   chat binding > character binding > activeGraphId
  */
 
-import { stagePortId, parseStatePort, ensureStageIds } from './statevals.js?v=0.13.0';
+import { stagePortId, parseStatePort, ensureStageIds } from './statevals.js?v=0.15.0';
 
 export const MODULE = 'prompt-canvas';
 export const META_KEY = 'promptCanvasGraph';
@@ -63,6 +63,14 @@ export const NODE_TYPES = {
      * has its own output dot.
      */
     STATE: 'state',
+    /**
+     * Prose the canvas remembers. It sends its text like a Prompt block, and
+     * Generate blocks can save their answers into it (a "save" wire). The text
+     * is kept with the chat, on the message it was written at, so swipes and
+     * deleted messages take their saves with them. It can also be mirrored
+     * into a lorebook entry.
+     */
+    MEMORY: 'memory',
 };
 
 /** A fresh output for a Decider, with one empty word rule to fill in. */
@@ -128,6 +136,12 @@ export const WIRE_KINDS = {
      * along it, so the data logic never sees it.
      */
     TOGETHER: 'together',
+    /**
+     * Not a data wire either: a Generate block's answer is saved into a
+     * Memory block, for the sends after this one. Nothing flows along it
+     * during the send, so the data logic never sees it.
+     */
+    SAVE: 'save',
     /** @deprecated Replaced by the Generate block, which is far easier to reason about. */
     SEQUENCE: 'sequence',
 };
@@ -447,6 +461,19 @@ export function defaultNode(type, x, y) {
             };
         case NODE_TYPES.NOTE:
             return { ...base, title: 'Note', content: '', w: 220 };
+        case NODE_TYPES.MEMORY:
+            return {
+                ...base,
+                title: 'Memory',
+                role: 'system',
+                /** What it holds before anything is saved into it. */
+                content: '',
+                /** How a saved answer lands: replace the text, add to it, or add and keep only the last few. */
+                saveMode: 'replace',
+                keep: 5,
+                /** Also keep the text in a lorebook entry. */
+                lore: { on: false, book: '', title: '', keys: '', constant: false },
+            };
         case NODE_TYPES.DECIDER:
             return {
                 ...base,
@@ -558,6 +585,13 @@ export function createBlanket(graph, x, y, { w = 560, h = 340, title = 'Group' }
 /** Undo a group: its blocks stay where they are, just no longer grouped. */
 export function ungroup(graph, groupId) {
     for (const n of Object.values(graph.nodes)) if (n.inGroup === groupId) delete n.inGroup;
+    if (graph.groups) delete graph.groups[groupId];
+    touchGraph(graph);
+}
+
+/** Delete a group and every block in it (with their wires). Output never goes. */
+export function deleteGroup(graph, groupId) {
+    for (const n of Object.values(graph.nodes)) if (n.inGroup === groupId) removeNode(graph, n.id);
     if (graph.groups) delete graph.groups[groupId];
     touchGraph(graph);
 }
@@ -687,6 +721,23 @@ export function connect(graph, fromId, toId, kind = WIRE_KINDS.APPEND, { port = 
 
     if (kind === WIRE_KINDS.TOGETHER) return tieTogether(graph, fromId, toId);
 
+    // Anything wired into a Memory block saves into it; only an answer can.
+    if (graph.nodes[toId].type === NODE_TYPES.MEMORY || kind === WIRE_KINDS.SAVE) {
+        if (graph.nodes[toId].type !== NODE_TYPES.MEMORY) return { ok: false, reason: 'Only a Memory block can have answers saved into it.' };
+        if (graph.nodes[fromId].type !== NODE_TYPES.GENERATE) {
+            return { ok: false, reason: 'A Memory block keeps what a Generate block answers. Wire a Generate block into it, or type its starting text in its settings.' };
+        }
+        if (Object.values(graph.wires).some(w => w.kind === WIRE_KINDS.SAVE && w.from === fromId && w.to === toId)) {
+            return { ok: false, reason: 'That answer is already saved into this memory.' };
+        }
+        // No cycle check: a save lands after the send, so a Generate block
+        // can read a memory and save into it (the heart of "keep updating").
+        const wire = { id: uid('w'), from: fromId, to: toId, kind: WIRE_KINDS.SAVE };
+        graph.wires[wire.id] = wire;
+        touchGraph(graph);
+        return { ok: true, wire };
+    }
+
     if (graph.nodes[fromId].type === NODE_TYPES.OUTPUT) return { ok: false, reason: 'Output has no outgoing wire.' };
     if (graph.nodes[fromId].type === NODE_TYPES.NOTE || graph.nodes[toId].type === NODE_TYPES.NOTE) {
         return { ok: false, reason: 'Notes are for you, not for the model.' };
@@ -778,7 +829,8 @@ function wouldCycle(graph, fromId, toId) {
         if (seen.has(cur)) continue;
         seen.add(cur);
         for (const w of Object.values(graph.wires)) {
-            if (w.from === cur && !w.loop) stack.push(w.to);
+            // A save lands after the send, so it never closes a loop.
+            if (w.from === cur && !w.loop && w.kind !== WIRE_KINDS.SAVE) stack.push(w.to);
         }
     }
     return false;
@@ -789,12 +841,19 @@ function wouldCycle(graph, fromId, toId) {
  * neither are loop wires: those run only at send time, so everything that
  * reads the graph as a picture (order, preview, reach) sees it without them.
  */
+const dataWire = (w) => w.kind !== WIRE_KINDS.TOGETHER && w.kind !== WIRE_KINDS.SAVE && !w.loop;
+
 export function wiresInto(graph, nodeId) {
-    return Object.values(graph.wires).filter(w => w.to === nodeId && w.kind !== WIRE_KINDS.TOGETHER && !w.loop);
+    return Object.values(graph.wires).filter(w => w.to === nodeId && dataWire(w));
 }
 
 export function wiresOutOf(graph, nodeId) {
-    return Object.values(graph.wires).filter(w => w.from === nodeId && w.kind !== WIRE_KINDS.TOGETHER && !w.loop);
+    return Object.values(graph.wires).filter(w => w.from === nodeId && dataWire(w));
+}
+
+/** Wires that save a Generate block's answer into a Memory block. */
+export function saveWires(graph) {
+    return Object.values(graph.wires ?? {}).filter(w => w.kind === WIRE_KINDS.SAVE);
 }
 
 /** Wires that send a result back up the canvas. */

@@ -14,20 +14,21 @@ import {
     chatBinding, setChatBinding, characterBinding, setCharacterBinding,
     exportGraph, importGraph, blankGraph, isFolderCollapsed, setFolderCollapsed, togetherGroup,
     newDeciderKey, removeDeciderKey, onGraphTouched, duplicateNode, newStateValue, groupNodes, ungroup, groupMembers, createBlanket, inOffGroup,
-} from './state.js?v=0.13.0';
-import { applyTheme } from './theme.js?v=0.13.0';
-import { makeClip, pasteClip, readClip, toClipboard, fromClipboard, lastClip, describeClip } from './clip.js?v=0.13.0';
-import { renderThemeEditor } from './theme-editor.js?v=0.13.0';
-import * as H from './history.js?v=0.13.0';
-import * as L from './library.js?v=0.13.0';
-import { compile, gatherContext, resolveNode, textOf, generateLevels, emissionCounts, wirePreview, countTokens, routingMode, explainDecider, deciderInputList, collect } from './compile.js?v=0.13.0';
-import { LORE_POSITIONS } from './lore.js?v=0.13.0';
-import { computeState, stageFor, NUDGE_KEY } from './statevals.js?v=0.13.0';
-import { openStateWindow, closeStateWindow } from './state-window.js?v=0.13.0';
-import { check as checkFormula } from './expr.js?v=0.13.0';
-import { DEFAULT_SELECT, isActive as selectActive, selectLabel } from './select.js?v=0.13.0';
-import { run, profileName, effectiveModel, callCount, testBlock, shapeForApi, inspectProfile, modelsForSource, sourceForBlock, cachedModels, fetchModelList, previewBlock } from './run.js?v=0.13.0';
-import { Canvas, WIRE_LABEL, TYPE_LABEL, TYPE_ICON } from './canvas.js?v=0.13.0';
+} from './state.js?v=0.15.0';
+import { applyTheme } from './theme.js?v=0.15.0';
+import { makeClip, pasteClip, readClip, toClipboard, fromClipboard, lastClip, describeClip } from './clip.js?v=0.15.0';
+import { renderThemeEditor } from './theme-editor.js?v=0.15.0';
+import * as H from './history.js?v=0.15.0';
+import * as L from './library.js?v=0.15.0';
+import { compile, gatherContext, resolveNode, textOf, generateLevels, emissionCounts, wirePreview, countTokens, routingMode, explainDecider, deciderInputList, collect } from './compile.js?v=0.15.0';
+import { LORE_POSITIONS } from './lore.js?v=0.15.0';
+import { computeState, stageFor, NUDGE_KEY } from './statevals.js?v=0.15.0';
+import { openStateWindow, closeStateWindow } from './state-window.js?v=0.15.0';
+import { memoryAt, memoryHistory, setMemoryNow, mirrorToLorebook, lorebookNames } from './memory.js?v=0.15.0';
+import { check as checkFormula } from './expr.js?v=0.15.0';
+import { DEFAULT_SELECT, isActive as selectActive, selectLabel } from './select.js?v=0.15.0';
+import { run, profileName, effectiveModel, callCount, testBlock, shapeForApi, inspectProfile, modelsForSource, sourceForBlock, cachedModels, fetchModelList, previewBlock } from './run.js?v=0.15.0';
+import { Canvas, WIRE_LABEL, TYPE_LABEL, TYPE_ICON } from './canvas.js?v=0.15.0';
 
 let root = null;
 let canvas = null;
@@ -281,9 +282,12 @@ function build() {
             canvas.select({ kind: 'node', id: node.id });
         },
         onContextMenu: onCanvasMenu,
+        onPickMember: pickMemberMenu,
+        confirmDelete: okToDelete,
         onDrop: onCanvasDrop,
         onCreateAt: onCreateBlockAt,
         stPreview: stPreviewText,
+        memoryPreview: (node) => memoryAt(node, chatNow()).text,
         profileName,
         effectiveModel,
         waveInfo,
@@ -326,8 +330,7 @@ function build() {
             return;
         }
         if ((e.key === 'Delete' || e.key === 'Backspace') && !typing) {
-            canvas.deleteSelection();
-            renderAll();
+            canvas.deleteSelection().then(done => { if (done) { selected = null; selectedKind = null; renderAll(); } });
         }
     });
 }
@@ -621,9 +624,10 @@ function renderSidebar() {
         [NODE_TYPES.INJECTION, 'fa-syringe', 'Injection'],
         [NODE_TYPES.LOREBOOK, 'fa-book-atlas', 'Lorebook'],
         [NODE_TYPES.STATE, 'fa-gauge-high', 'State'],
+        [NODE_TYPES.MEMORY, 'fa-floppy-disk', 'Memory'],
         [NODE_TYPES.NOTE, 'fa-note-sticky', 'Note'],
     ]) {
-        const b = el('div', 'pc-block-chip');
+        const b = el('div', `pc-block-chip pc-lib-t-${type}`);
         b.innerHTML = `<i class="fa-solid ${icon}"></i> ${label}`;
         b.draggable = true;
         b.addEventListener('dragstart', (e) => {
@@ -648,7 +652,7 @@ function renderLists(container, query) {
     const stList = L.stPrompts().filter(p => !q || p.name.toLowerCase().includes(q));
     const stFolder = makeFolder('SillyTavern', stList.length, true, null, '__sillytavern__');
     for (const p of stList) {
-        const item = el('div', `pc-lib-item pc-lib-st${p.enabled ? '' : ' pc-lib-dim'}`);
+        const item = el('div', `pc-lib-item pc-lib-st pc-lib-t-st${p.enabled ? '' : ' pc-lib-dim'}`);
         item.innerHTML = `<i class="fa-solid ${p.marker ? 'fa-cube' : 'fa-align-left'}"></i>` +
             `<span class="pc-lib-name">${escapeHtml(p.name)}</span>` +
             `<span class="pc-lib-tag">${p.marker ? 'dynamic' : escapeHtml(p.role ?? 'system')}</span>`;
@@ -671,8 +675,8 @@ function renderLists(container, query) {
         if (q && !items.length) continue;
         const folder = makeFolder(f.name, items.length, false, f, f.id);
         for (const p of items) {
-            const item = el('div', `pc-lib-item${L.isPiece(p) ? ' pc-lib-piece' : ''}`);
             const look = pieceLook(p);
+            const item = el('div', `pc-lib-item pc-lib-t-${look.type}${L.isPiece(p) ? ' pc-lib-piece' : ''}`);
             item.innerHTML = `<i class="fa-solid ${look.icon}"></i>` +
                 `<span class="pc-lib-name">${escapeHtml(p.name)}</span>` +
                 `<span class="pc-lib-tag">${escapeHtml(look.tag)}</span>`;
@@ -708,11 +712,11 @@ function renderLists(container, query) {
 
 /** Icon and tag for a library entry: a prompt's role, or what kind of blocks a saved piece holds. */
 function pieceLook(p) {
-    if (!L.isPiece(p)) return { icon: 'fa-align-left', tag: p.role || 'system' };
+    if (!L.isPiece(p)) return { icon: 'fa-align-left', tag: p.role || 'system', type: 'prompt' };
     const { nodes, groups } = p.clip;
-    if (groups.length === 1 && nodes.every(n => n.inGroup === groups[0].id)) return { icon: 'fa-object-group', tag: `group \u00b7 ${nodes.length}` };
-    if (nodes.length === 1) return { icon: TYPE_ICON[nodes[0].type] ?? 'fa-cube', tag: (TYPE_LABEL[nodes[0].type] ?? nodes[0].type).toLowerCase() };
-    return { icon: 'fa-cubes', tag: `${nodes.length} blocks` };
+    if (groups.length === 1 && nodes.every(n => n.inGroup === groups[0].id)) return { icon: 'fa-object-group', tag: `group \u00b7 ${nodes.length}`, type: 'group' };
+    if (nodes.length === 1) return { icon: TYPE_ICON[nodes[0].type] ?? 'fa-cube', tag: (TYPE_LABEL[nodes[0].type] ?? nodes[0].type).toLowerCase(), type: nodes[0].type };
+    return { icon: 'fa-cubes', tag: `${nodes.length} blocks`, type: 'several' };
 }
 
 /**
@@ -989,7 +993,7 @@ function renderMultiInspector(box) {
     box.append(more);
     const del = el('div', 'pc-btn menu_button pc-danger');
     del.innerHTML = `<i class="fa-solid fa-trash-can"></i> Delete these ${ids.length} blocks`;
-    del.addEventListener('click', () => { canvas.deleteSelection(); selected = null; selectedKind = null; renderAll(); });
+    del.addEventListener('click', () => deleteBlocks(ids));
     box.append(del);
     box.append(el('div', 'pc-hint', 'Shift-click a block to add or remove it. Shift-drag on empty canvas to pick everything in a box.'));
 }
@@ -1017,6 +1021,19 @@ function renderGroupInspector(box) {
     for (const n of members) list.append(el('span', 'pc-dest-chip', n.title || 'Untitled'));
     if (!members.length) list.append(el('span', 'pc-hint', 'Nothing on it yet. Drag blocks onto the blanket.'));
     box.append(field(`${members.length} block${members.length === 1 ? '' : 's'}`, list));
+    if (members.length > 1) {
+        const ends = canvas.groupEnds(g.id);
+        const pairs = (auto) => [['', auto], ...members.filter(n => n.type !== NODE_TYPES.NOTE).map(n => [n.id, n.title || 'Untitled'])];
+        const autoIn = !g.entry && ends.entries.length === 1 ? `automatic (${ends.entries[0].title || 'Untitled'})` : 'ask each time';
+        const autoOut = !g.exit && ends.exits.length === 1 ? `automatic (${ends.exits[0].title || 'Untitled'})` : 'ask each time';
+        const row = el('div', 'pc-row');
+        row.append(
+            field('Wires in go to', dropdown(pairs(autoIn), g.entry ?? '', (v) => { if (v) g.entry = v; else delete g.entry; touch(); renderInspector(); })),
+            field('Wires out leave from', dropdown(pairs(autoOut), g.exit ?? '', (v) => { if (v) g.exit = v; else delete g.exit; touch(); renderInspector(); })),
+        );
+        box.append(row);
+        box.append(el('div', 'pc-hint', 'When the group is folded, drag onto it (or its top dot) to wire something in, and from its bottom dot to wire something out. These say which block inside is used; otherwise it is the one obvious block, or you are asked.'));
+    }
     const toggle = el('div', 'pc-btn menu_button');
     toggle.innerHTML = g.collapsed ? '<i class="fa-solid fa-up-right-and-down-left-from-center"></i> Open it' : '<i class="fa-solid fa-down-left-and-up-right-to-center"></i> Fold it into one block';
     toggle.addEventListener('click', () => { canvas.setCollapsed(g.id, !g.collapsed); renderInspector(); });
@@ -1038,6 +1055,11 @@ function renderGroupInspector(box) {
     keep.addEventListener('click', () => savePickToLibrary({ groupIds: [g.id] }));
     row2.append(cp, keep);
     if (members.length) box.append(row2);
+    const delG = el('div', 'pc-btn menu_button pc-danger');
+    delG.innerHTML = `<i class="fa-solid fa-trash-can"></i> Delete the group${members.length ? ` and its ${members.length} block${members.length === 1 ? '' : 's'}` : ''}`;
+    delG.title = 'Delete key does the same. Ungroup instead to keep the blocks.';
+    delG.addEventListener('click', () => deleteWholeGroup(g.id));
+    box.append(delG);
     box.append(el('div', 'pc-hint', g.collapsed
         ? 'Open the group to lay it out as a blanket. Double-click it, or use the button on the block.'
         : 'Whatever rests on the blanket is in the group. Drag blocks on to add them, drag them off to take them out, and pull the corner to make it bigger. Folding it gathers everything on it into one block.'));
@@ -1157,6 +1179,7 @@ function renderWireInspector(box) {
     }
 
     if (wire.loop) return renderLoopInspector(box, wire, from, to);
+    if (wire.kind === WIRE_KINDS.SAVE) return renderSaveWireInspector(box, wire, from, to);
 
     box.append(el('div', 'pc-insp-title', 'Wire'));
     box.append(el('div', 'pc-hint', `${from?.title ?? '?'} → ${to?.title ?? '?'}`));
@@ -1263,6 +1286,7 @@ function renderNodeInspector(box) {
     else if (node.type === NODE_TYPES.INJECTION) renderInjectionFields(box, node);
     else if (node.type === NODE_TYPES.LOREBOOK) renderLoreFields(box, node);
     else if (node.type === NODE_TYPES.STATE) renderStateFields(box, node);
+    else if (node.type === NODE_TYPES.MEMORY) renderMemoryFields(box, node);
     else if (node.type === NODE_TYPES.GENERATE) renderGenerateFields(box, node);
     else if (node.type === NODE_TYPES.DECIDER) renderDeciderFields(box, node);
     else if (node.type === NODE_TYPES.NOTE) {
@@ -1278,7 +1302,7 @@ function renderNodeInspector(box) {
     if (node.type !== NODE_TYPES.NOTE && node.type !== NODE_TYPES.DECIDER && node.type !== NODE_TYPES.STATE) {
         box.append(el('hr', 'pc-rule'));
         renderConditionEditor(box, node);
-        renderModelEditor(box, node);
+        if (node.type !== NODE_TYPES.MEMORY) renderModelEditor(box, node);
     }
 
     if (node.type !== NODE_TYPES.OUTPUT) {
@@ -1292,6 +1316,13 @@ function renderNodeInspector(box) {
         cp.addEventListener('click', () => copySelection(false, { nodeIds: [node.id] }));
         const actions = el('div', 'pc-row pc-insp-actions');
         actions.append(dup, cp);
+        if (node.type === NODE_TYPES.GENERATE) {
+            const mem = el('div', 'pc-btn menu_button');
+            mem.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> Save its answers\u2026';
+            mem.title = 'Keep its answers in a Memory block (and a lorebook entry), for the messages after this one';
+            mem.addEventListener('click', () => saveAnswersToMemory(node));
+            actions.append(mem);
+        }
         if (node.type !== NODE_TYPES.PROMPT) {
             const keep = el('div', 'pc-btn menu_button');
             keep.innerHTML = '<i class="fa-solid fa-bookmark"></i> Save to library';
@@ -1302,12 +1333,7 @@ function renderNodeInspector(box) {
         box.append(actions);
         const del = el('div', 'pc-btn menu_button pc-danger');
         del.innerHTML = '<i class="fa-solid fa-trash-can"></i> Delete this block';
-        del.addEventListener('click', () => {
-            removeNode(current, node.id);
-            selected = null;
-            canvas.render();
-            renderInspector();
-        });
+        del.addEventListener('click', () => deleteBlocks([node.id]));
         actions.append(del);
     }
 }
@@ -2343,6 +2369,183 @@ async function nudgeState(node, v, value) {
     await safe(() => c.saveChat());
 }
 
+/* ------------------------------------------------------------------ */
+/* Memory                                                              */
+/* ------------------------------------------------------------------ */
+
+/** The chat, for showing what a memory holds. */
+const chatNow = () => liveCache?.chat ?? safe(() => ctx().chat) ?? [];
+
+/**
+ * A Memory block: prose that Generate blocks save into, kept with the chat,
+ * optionally also in a lorebook entry.
+ */
+function renderMemoryFields(box, node) {
+    const soft = () => { touch(); canvas.render(); };
+    box.append(el('div', 'pc-hint', 'Prose the canvas remembers from send to send. It is sent like a Prompt block. Wire a Generate block into it and its answer is saved here, ready for the next message.'));
+
+    const start = el('textarea', 'text_pole pc-textarea');
+    start.rows = 4;
+    start.value = node.content ?? '';
+    start.placeholder = 'e.g. The market square: Mira the smith at her forge, Tom the guard at the gate.';
+    start.addEventListener('input', () => { node.content = start.value; soft(); });
+    box.append(field('Starting text', start, 'What it holds before anything is saved, and in every new chat. Macros like {{char}} work.'));
+
+    // What it holds now.
+    const chat = chatNow();
+    const now = memoryAt(node, chat);
+    const where = now.index < 0 ? 'its starting text' : `saved at message ${now.index + 1}`;
+    const cur = el('textarea', 'text_pole pc-textarea pc-mem-now');
+    cur.rows = 5;
+    cur.value = now.text;
+    const setBtn = el('div', 'pc-btn menu_button', 'Set now');
+    setBtn.title = 'Keep this text from now on (on the latest message, so it goes if that message is deleted)';
+    setBtn.addEventListener('click', async () => {
+        if (!setMemoryNow(node, cur.value, chat)) { toast('Start the chat first: what you set is kept on the latest message.', 'warning'); return; }
+        await safe(() => ctx().saveChat());
+        if (node.lore?.on) {
+            const r = await mirrorToLorebook(node, cur.value);
+            if (!r.ok) toast(r.reason, 'warning');
+        }
+        soft(); renderInspector();
+    });
+    const reset = el('div', 'pc-btn menu_button', 'Back to the starting text');
+    reset.addEventListener('click', () => { cur.value = node.content ?? ''; setBtn.click(); });
+    const actions = el('div', 'pc-row pc-insp-actions');
+    actions.append(setBtn, reset);
+    box.append(field(`Right now (${where})`, cur));
+    box.append(actions);
+
+    // How saves land.
+    box.append(field('When an answer is saved', dropdown([
+        ['replace', 'It replaces the text'],
+        ['append', 'It is added to the end'],
+        ['keep', 'It is added, keeping only the last few paragraphs'],
+    ], node.saveMode ?? 'replace', (v) => { node.saveMode = v; soft(); renderInspector(); }),
+    'Replace suits "the current situation"; add suits a growing record of events or facts.'));
+    if (node.saveMode === 'keep') {
+        const k = el('input', 'text_pole pc-select-num');
+        k.type = 'number'; k.min = '1'; k.value = node.keep ?? 5;
+        k.addEventListener('input', () => { node.keep = Math.max(1, Number(k.value) || 1); soft(); });
+        box.append(field('Paragraphs to keep', k));
+    }
+
+    // Who saves into it.
+    const savers = Object.values(current.wires).filter(w => w.kind === WIRE_KINDS.SAVE && w.to === node.id);
+    const chips = el('div', 'pc-dest-chips');
+    for (const w of savers) {
+        const src = current.nodes[w.from];
+        const chip = el('span', 'pc-dest-chip', `\u2913 ${src?.title || 'missing block'}`);
+        chip.title = 'Click for this save\u2019s settings (what part of the answer, and when)';
+        chip.style.cursor = 'pointer';
+        chip.addEventListener('click', () => canvas.select({ kind: 'wire', id: w.id }));
+        const x = el('i', 'fa-solid fa-xmark pc-dest-x');
+        x.title = 'Stop saving this answer here';
+        x.addEventListener('click', (e) => { e.stopPropagation(); disconnect(current, w.id); touch(); canvas.render(); renderInspector(); });
+        chip.append(x);
+        chips.append(chip);
+    }
+    if (!savers.length) chips.append(el('span', 'pc-hint pc-dest-none', 'nothing saves into it yet'));
+    const gens = Object.values(current.nodes).filter(n => n.type === NODE_TYPES.GENERATE && !savers.some(w => w.from === n.id));
+    const pick = el('select', 'pc-select text_pole');
+    pick.append(Object.assign(el('option', '', gens.length ? '+ save the answer of\u2026' : 'Add a Generate block to save its answers'), { value: '' }));
+    for (const n of gens) pick.append(Object.assign(el('option', '', n.title || 'Generate'), { value: n.id }));
+    pick.addEventListener('change', () => {
+        if (!pick.value) return;
+        const res = connect(current, pick.value, node.id, WIRE_KINDS.SAVE);
+        if (!res.ok) toast(res.reason, 'warning');
+        touch(); canvas.render(); renderInspector();
+    });
+    const saverBox = el('div', 'pc-dest');
+    saverBox.append(chips, pick);
+    box.append(field('Saved into it by', saverBox, 'Or drag from a Generate block\u2019s bottom dot onto this block. A Generate block can read this memory and save into it too: it reads what was here, and its answer is here from the next message on.'));
+
+    // Also in a lorebook.
+    node.lore ??= { on: false, book: '', title: '', keys: '', constant: false };
+    const lore = node.lore;
+    const lb = el('div', 'pc-mem-lore');
+    lb.append(checkline('Also keep it in a lorebook entry', !!lore.on, (v) => { lore.on = v; soft(); renderInspector(); }));
+    if (lore.on) {
+        const books = dropdown([['', 'Loading lorebooks\u2026']], lore.book ?? '', (v) => { lore.book = v; soft(); });
+        lorebookNames().then(names => {
+            books.innerHTML = '';
+            const pairs = [['', names.length ? '\u2014 choose a lorebook \u2014' : 'No lorebooks found'], ...names.map(n => [n, n])];
+            if (lore.book && !names.includes(lore.book)) pairs.push([lore.book, `${lore.book} (not found)`]);
+            for (const [v, t] of pairs) books.append(Object.assign(el('option', '', t), { value: v }));
+            books.value = lore.book ?? '';
+        });
+        lb.append(field('Lorebook', books));
+        const title = el('input', 'text_pole');
+        title.value = lore.title ?? '';
+        title.placeholder = node.title || 'Memory';
+        title.addEventListener('input', () => { lore.title = title.value; soft(); });
+        lb.append(field('Entry title', title));
+        const keys = el('input', 'text_pole');
+        keys.value = lore.keys ?? '';
+        keys.placeholder = 'e.g. Mira, forge, smith';
+        keys.addEventListener('input', () => { lore.keys = keys.value; soft(); });
+        lb.append(field('Keywords', keys, 'The entry comes up when these appear in the chat. Comma-separated.'));
+        lb.append(checkline('Always on (constant), whatever the keywords', !!lore.constant, (v) => { lore.constant = v; soft(); }));
+        const now = el('div', 'pc-btn menu_button', 'Write it there now');
+        now.addEventListener('click', async () => {
+            const r = await mirrorToLorebook(node, memoryAt(node, chatNow()).text);
+            if (r.ok) { save(); toast(`Kept in "${lore.book}".`, 'success'); } else toast(r.reason, 'warning');
+        });
+        lb.append(now);
+        lb.append(el('div', 'pc-hint', 'Every save rewrites the same entry with the memory\u2019s latest text, so it never piles up copies. Unlike the memory itself, the entry does not change back if you delete messages; "Write it there now" brings it back in line.'));
+    }
+    box.append(lb);
+
+    // Saves so far.
+    const hist = memoryHistory(node, chat);
+    if (hist.length) {
+        const list = el('div', 'pc-mem-hist');
+        for (const h of hist.slice(-10).reverse()) {
+            const row = el('div', 'pc-mem-hrow');
+            row.append(el('b', '', `#${h.index + 1}${h.by ? ` \u00b7 ${h.by}` : ''}`), document.createTextNode(h.text.length > 120 ? `${h.text.slice(0, 120)}\u2026` : h.text));
+            list.append(row);
+        }
+        box.append(field(`Saves in this chat (${hist.length})`, list, 'Each is kept on the message it was made for. Delete or swipe that message and its save goes with it.'));
+    }
+    box.append(field('Role', dropdown(ROLES.map(r => [r, r]), node.role || 'system', (v) => { node.role = v; soft(); })));
+}
+
+/**
+ * One click from a Generate block to keeping its answers: a Memory block
+ * beside it, wired to save them, with its lorebook entry switched on so you
+ * only have to pick the lorebook. An existing memory it saves into is reused.
+ */
+function saveAnswersToMemory(gen) {
+    const existing = Object.values(current.wires).find(w => w.kind === WIRE_KINDS.SAVE && w.from === gen.id);
+    let mem = existing ? current.nodes[existing.to] : null;
+    if (!mem) {
+        mem = addNode(current, NODE_TYPES.MEMORY, Math.round(gen.x + (gen.w || 260) + 60), Math.round(gen.y));
+        mem.title = `${gen.title || 'Generate'} (kept)`;
+        mem.saveMode = 'append';
+        mem.lore = { on: true, book: '', title: gen.title || 'Generated', keys: '', constant: false };
+        const res = connect(current, gen.id, mem.id, WIRE_KINDS.SAVE);
+        if (!res.ok) { toast(res.reason, 'warning'); return; }
+        landed([mem.id]);
+    }
+    root.classList.remove('pc-hide-inspector');
+    syncPaneToggles();
+    canvas.select({ kind: 'node', id: mem.id });
+    renderAll();
+    toast(existing ? 'Its answers already go into this memory.' : 'Its answers are now kept here, added to the end. Pick a lorebook and keywords below, or switch the lorebook off to keep them only in the chat.', 'success');
+}
+
+/** A save wire: what part of the answer is kept, and when. */
+function renderSaveWireInspector(box, wire, from, to) {
+    box.append(el('div', 'pc-insp-title', 'Save into memory'));
+    box.append(el('div', 'pc-hint', `The answer of "${from?.title ?? '?'}" is saved into "${to?.title ?? '?'}" (${{ append: 'added to the end', keep: 'added, keeping the last few paragraphs' }[to?.saveMode] ?? 'replacing its text'}). It is there from the next message on; this send still uses what the memory held before.`));
+    renderSelectFields(box, wire);
+    renderWireCondition(box, wire);
+    const cut = el('div', 'pc-btn menu_button pc-danger');
+    cut.innerHTML = '<i class="fa-solid fa-scissors"></i> Stop saving';
+    cut.addEventListener('click', () => { disconnect(current, wire.id); selected = null; canvas.render(); renderInspector(); });
+    box.append(cut);
+}
+
 /** The State block's own window. */
 function openStateEditor(node) {
     if (!current || !node) return;
@@ -3073,6 +3276,80 @@ function duplicateSelected(node, withInputs = false) {
     refreshPreview();
 }
 
+/**
+ * Whether to go ahead with a delete. Only asks when "Ask before deleting" is
+ * on in the extension settings; otherwise undo is the safety net.
+ */
+async function okToDelete(what) {
+    if (!settings().ui?.confirmDelete) return true;
+    return await confirmBox(`Delete ${what}? (Ctrl+Z brings it back.)`);
+}
+
+/** Delete blocks, from a button or a menu. */
+async function deleteBlocks(ids) {
+    ids = ids.filter(id => current.nodes[id] && current.nodes[id].type !== NODE_TYPES.OUTPUT);
+    if (!ids.length) return;
+    const what = ids.length === 1 ? `"${current.nodes[ids[0]].title || 'Untitled'}"` : `these ${ids.length} blocks`;
+    if (!await okToDelete(what)) return;
+    for (const id of ids) removeNode(current, id);
+    canvas.setMulti([]);
+    selected = null; selectedKind = null;
+    canvas.select(null);
+    renderAll();
+}
+
+/** Delete a group with everything in it. */
+async function deleteWholeGroup(gid) {
+    canvas.select({ kind: 'group', id: gid });
+    if (await canvas.deleteSelection()) { selected = null; selectedKind = null; renderAll(); }
+}
+
+/**
+ * A wire into or out of a folded group, where more than one block inside
+ * could take it: ask which, with a small menu at the pointer.
+ * @returns {Promise<{id: string, port: string|null}|null>}
+ */
+function pickMemberMenu({ group, side, likely, others, clientX, clientY }) {
+    return new Promise((resolve) => {
+        document.querySelector('.pc-menu')?.remove();
+        const menu = el('div', 'pc-menu');
+        menu.style.left = `${clientX}px`;
+        menu.style.top = `${clientY}px`;
+        menu.append(el('div', 'pc-menu-head', side === 'in' ? `Into which block of "${group.title || 'Group'}"?` : `From which block of "${group.title || 'Group'}"?`));
+        let done = false;
+        const finish = (v) => {
+            if (done) return;
+            done = true;
+            menu.remove();
+            document.removeEventListener('mousedown', away, true);
+            document.removeEventListener('keydown', esc, true);
+            resolve(v);
+        };
+        const add = (o, likelyOne) => {
+            const i = el('div', `pc-menu-item${likelyOne ? ' pc-menu-likely' : ''}`);
+            i.innerHTML = `<i class="fa-solid ${TYPE_ICON[current.nodes[o.id]?.type] ?? 'fa-cube'}"></i> ${escapeHtml(o.label)}`;
+            i.addEventListener('click', () => finish(o));
+            menu.append(i);
+        };
+        for (const o of likely) add(o, true);
+        if (others.length) {
+            menu.append(el('div', 'pc-menu-sub', 'other blocks in it'));
+            for (const o of others) add(o, false);
+        }
+        menu.append(el('div', 'pc-hint pc-menu-tip', `Set a default in the group\u2019s panel ("Wires ${side === 'in' ? 'in go to' : 'out leave from'}") and this is not asked again.`));
+        const away = (e) => { if (!menu.contains(e.target)) finish(null); };
+        const esc = (e) => { if (e.key === 'Escape') { e.stopPropagation(); finish(null); } };
+        document.body.append(menu);
+        const r = menu.getBoundingClientRect();
+        if (r.right > window.innerWidth) menu.style.left = `${Math.max(4, window.innerWidth - r.width - 8)}px`;
+        if (r.bottom > window.innerHeight) menu.style.top = `${Math.max(4, window.innerHeight - r.height - 8)}px`;
+        setTimeout(() => {
+            document.addEventListener('mousedown', away, true);
+            document.addEventListener('keydown', esc, true);
+        }, 0);
+    });
+}
+
 function onCanvasMenu({ event, node, wire, at, group = null, several = null }) {
     document.querySelector('.pc-menu')?.remove();
     const menu = el('div', 'pc-menu');
@@ -3091,7 +3368,7 @@ function onCanvasMenu({ event, node, wire, at, group = null, several = null }) {
         menu.append(item(`Group these ${several.length} blocks`, 'fa-object-group', () => makeGroup(several, 'Group')));
         menu.append(item(`Copy these ${several.length} blocks`, 'fa-copy', () => copySelection(false, { nodeIds: several })));
         menu.append(item('Save them to the library\u2026', 'fa-bookmark', () => savePickToLibrary({ nodeIds: several })));
-        menu.append(item(`Delete these ${several.length} blocks`, 'fa-trash-can', () => { canvas.deleteSelection(); selected = null; selectedKind = null; renderAll(); }));
+        menu.append(item(`Delete these ${several.length} blocks`, 'fa-trash-can', () => deleteBlocks(several)));
     } else if (group) {
         menu.append(item(group.collapsed ? 'Open the group' : 'Fold into one block', group.collapsed ? 'fa-up-right-and-down-left-from-center' : 'fa-down-left-and-up-right-to-center', () => canvas.setCollapsed(group.id, !group.collapsed)));
         menu.append(item(group.enabled === false ? 'Switch the group on' : 'Switch the whole group off', 'fa-power-off', () => { canvas.toggleGroup(group.id); renderInspector(); }));
@@ -3099,6 +3376,7 @@ function onCanvasMenu({ event, node, wire, at, group = null, several = null }) {
         menu.append(item('Copy the group', 'fa-copy', () => copySelection(false, { groupIds: [group.id] })));
         menu.append(item('Save the group to the library\u2026', 'fa-bookmark', () => savePickToLibrary({ groupIds: [group.id] })));
         menu.append(item('Ungroup (the blocks stay)', 'fa-object-ungroup', () => { ungroup(current, group.id); selected = null; selectedKind = null; canvas.render(); renderInspector(); }));
+        menu.append(item('Delete the group and its blocks', 'fa-trash-can', () => deleteWholeGroup(group.id)));
     } else if (wire?.loop) {
         // A loop has no kind to change: offer what matters for a loop.
         const from = current.nodes[wire.from];
@@ -3114,6 +3392,10 @@ function onCanvasMenu({ event, node, wire, at, group = null, several = null }) {
         }
         menu.append(item('Loop settings\u2026', 'fa-sliders', () => canvas.select({ kind: 'wire', id: wire.id })));
         menu.append(item('Remove this loop', 'fa-trash-can', () => { disconnect(current, wire.id); selected = null; canvas.render(); renderInspector(); }));
+    } else if (wire?.kind === WIRE_KINDS.SAVE) {
+        menu.append(el('div', 'pc-menu-head', 'Saves the answer into memory'));
+        menu.append(item('Settings\u2026', 'fa-sliders', () => canvas.select({ kind: 'wire', id: wire.id })));
+        menu.append(item('Stop saving (cut the wire)', 'fa-scissors', () => { disconnect(current, wire.id); canvas.render(); renderInspector(); }));
     } else if (wire) {
         for (const [kind, label] of Object.entries(WIRE_LABEL)) {
             menu.append(item(`Make it "${label}"`, 'fa-shuffle', () => canvas.setWireKind(wire.id, kind)));
@@ -3131,6 +3413,7 @@ function onCanvasMenu({ event, node, wire, at, group = null, several = null }) {
         if (node.type !== NODE_TYPES.OUTPUT) {
             menu.append(item('Copy', 'fa-copy', () => copySelection(false, { nodeIds: [node.id] })));
             menu.append(item('Save to library\u2026', 'fa-bookmark', () => savePickToLibrary({ nodeIds: [node.id] })));
+            if (node.type === NODE_TYPES.GENERATE) menu.append(item('Save its answers to memory / a lorebook', 'fa-floppy-disk', () => saveAnswersToMemory(node)));
             menu.append(item('Duplicate', 'fa-clone', () => duplicateSelected(node, false)));
             menu.append(item('Duplicate with its inputs', 'fa-clone', () => duplicateSelected(node, true)));
         }
@@ -3170,12 +3453,7 @@ function onCanvasMenu({ event, node, wire, at, group = null, several = null }) {
             if (!res.ok) toast(res.reason, 'error'); else canvas.render();
         }));
         if (node.type !== NODE_TYPES.OUTPUT) {
-            menu.append(item('Delete block', 'fa-trash-can', () => {
-                removeNode(current, node.id);
-                    selected = null;
-                canvas.render();
-                renderInspector();
-            }));
+            menu.append(item('Delete block', 'fa-trash-can', () => deleteBlocks([node.id])));
         }
     } else {
         for (const [type, icon, label] of [
@@ -3187,6 +3465,7 @@ function onCanvasMenu({ event, node, wire, at, group = null, several = null }) {
             [NODE_TYPES.INJECTION, 'fa-syringe', 'Injection'],
             [NODE_TYPES.LOREBOOK, 'fa-book-atlas', 'Lorebook'],
             [NODE_TYPES.STATE, 'fa-gauge-high', 'State'],
+        [NODE_TYPES.MEMORY, 'fa-floppy-disk', 'Memory'],
             [NODE_TYPES.NOTE, 'fa-note-sticky', 'Note'],
         ]) {
             menu.append(item(`Add ${label}`, icon, () => {

@@ -22,15 +22,16 @@
  * no exceptions, because a graph you have to trace to predict is not a tool.
  */
 
-import { ctx, safe, NODE_TYPES, WIRE_KINDS, wiresInto, wiresOutOf, outputNode, togetherGroup, groupWires, deciderKeys, settings, activeGraph } from './state.js?v=0.13.0';
-import { stPrompt, MARKER_SOURCES, getPrompt } from './library.js?v=0.13.0';
-import { applySelect } from './select.js?v=0.13.0';
-import { toEntry, selectLore, loreMessages, blockBooks, stripFromWorldInfo } from './lore.js?v=0.13.0';
-import { computeState, valueOutput, stageFor, stageText, parseStatePort, stagePortId } from './statevals.js?v=0.13.0';
+import { ctx, safe, NODE_TYPES, WIRE_KINDS, wiresInto, wiresOutOf, outputNode, togetherGroup, groupWires, deciderKeys, settings, activeGraph, saveWires } from './state.js?v=0.15.0';
+import { memoryForSend } from './memory.js?v=0.15.0';
+import { stPrompt, MARKER_SOURCES, getPrompt } from './library.js?v=0.15.0';
+import { applySelect } from './select.js?v=0.15.0';
+import { toEntry, selectLore, loreMessages, blockBooks, stripFromWorldInfo } from './lore.js?v=0.15.0';
+import { computeState, valueOutput, stageFor, stageText, parseStatePort, stagePortId } from './statevals.js?v=0.15.0';
 
 /** A library prompt's text, for stages linked to one. */
 const libraryText = (id) => safe(() => getPrompt(id)?.content) ?? null;
-import { holds } from './expr.js?v=0.13.0';
+import { holds } from './expr.js?v=0.15.0';
 
 /* ------------------------------------------------------------------ */
 /* live context                                                        */
@@ -762,6 +763,14 @@ export function resolveNode(node, live) {
             return { messages: [{ role: node.role || 'system', content }], warnings };
         }
 
+        case NODE_TYPES.MEMORY: {
+            // What it held before the message this send answers, so a swipe
+            // reads the same text again.
+            const content = sub(memoryForSend(node, live.chat ?? []).text).trim();
+            if (!content) return { messages: [], warnings };
+            return { messages: [{ role: node.role || 'system', content }], warnings };
+        }
+
         case NODE_TYPES.ST: {
             const def = stPrompt(node.identifier);
             if (!def) {
@@ -1432,6 +1441,17 @@ export function liveNodes(graph, live, results = {}, decisions = {}) {
         const d = tryDecide(graph, dec, live, results, decisions);
         if (d) choice[dec.id] = d.keys ?? [d.key];
     }
+    for (const root of sinks(graph).slice(1)) {
+        for (const dec of upstreamDeciders(graph, root)) {
+            if (choice[dec.id]) continue;
+            const d = tryDecide(graph, dec, live, results, decisions);
+            if (d) choice[dec.id] = d.keys ?? [d.key];
+        }
+        if (graph.nodes[root]?.type === NODE_TYPES.DECIDER && !choice[root]) {
+            const d = tryDecide(graph, graph.nodes[root], live, results, decisions);
+            if (d) choice[root] = d.keys ?? [d.key];
+        }
+    }
     const cut = cutNodes(graph, choice);
     // A probability roll is not known until the real walk, so assume it passes:
     // better to run a block that ends up unused than to miss one that is used.
@@ -1439,7 +1459,8 @@ export function liveNodes(graph, live, results = {}, decisions = {}) {
     const gate = activationGate(graph, choice, cut, (n) => n.condition?.mode === 'probability' ? { pass: true } : evaluateCondition(n, view),
         (src, port) => stateDotOn(src, port, view),
         (w) => { const src = graph.nodes[w.from]; return wireHolds(w, view, src?.type === NODE_TYPES.STATE ? stateOutputFor(src, w.port, view) : undefined); });
-    const stack = [out.id];
+    const stack = sinks(graph);
+    const roots = new Set(stack);
     // A block that only switches another on: follow its own Activate wires
     // up to any Decider, because that Decider still has to be able to choose.
     const gateSeen = new Set();
@@ -1457,6 +1478,8 @@ export function liveNodes(graph, live, results = {}, decisions = {}) {
         const id = stack.pop();
         if (seen.has(id)) continue;
         if (id !== out.id && !gate(id).on) continue;
+        // A Generate block that only saves into memory still has to pass its own condition.
+        if (roots.has(id) && id !== out.id && cut.has(id)) continue;
         seen.add(id);
         for (const w of wiresInto(graph, id)) {
             const src = graph.nodes[w.from];
@@ -1470,6 +1493,22 @@ export function liveNodes(graph, live, results = {}, decisions = {}) {
         }
     }
     return seen;
+}
+
+/**
+ * Where the walk back through a canvas starts: Output, and every Generate
+ * block whose answer is saved into a (switched on) Memory block. A block
+ * that only saves still runs, even though nothing of it reaches Output.
+ */
+function sinks(graph) {
+    const out = outputNode(graph);
+    const list = out ? [out.id] : [];
+    for (const w of saveWires(graph)) {
+        const mem = graph.nodes[w.to];
+        if (!mem || mem.enabled === false || !graph.nodes[w.from]) continue;
+        if (!list.includes(w.from)) list.push(w.from);
+    }
+    return list;
 }
 
 /** Every Decider with a path into this block. */
@@ -1558,9 +1597,10 @@ export function generateOrder(graph) {
     const out = outputNode(graph);
     if (!out) return [];
 
-    // walk backwards from Output, collecting every node that feeds it
+    // walk backwards from Output (and from answers saved into memory),
+    // collecting every node that feeds it
     const reaching = new Set();
-    const stack = [out.id];
+    const stack = sinks(graph);
     while (stack.length) {
         const id = stack.pop();
         if (reaching.has(id)) continue;
@@ -1654,7 +1694,9 @@ export function reachesOutput(graph) {
     const out = outputNode(graph);
     const seen = new Set();
     if (!out) return seen;
-    const stack = [out.id];
+    const stack = sinks(graph);
+    // A Memory block that is saved into is used, even if it sends nowhere.
+    for (const w of saveWires(graph)) seen.add(w.to);
     while (stack.length) {
         const id = stack.pop();
         if (seen.has(id)) continue;
