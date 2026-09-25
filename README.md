@@ -1,12 +1,24 @@
 # Silly Canvas
 
-A SillyTavern extension that lets you build your prompt as a graph instead of a list.
+**Decide exactly what the AI sees, when, and how.**
 
-Each block is a piece of the prompt: your own text, one of SillyTavern's prompts, the chat history, your lorebooks. Wires connect the blocks, and the canvas turns them into the exact messages that get sent. You can read the whole prompt before anything goes out.
+Ever been frustrated by how little control you have over what the AI sees? How it drowns in story context, or in the instructions you piled on to fight that? Silly Canvas turns your SillyTavern prompt into a canvas of blocks and wires. Each block is a piece of the prompt, the wires say how they fit together, and you can read the exact messages before a single token is spent.
 
-You can also put extra model calls in the middle of the graph. A Generate block can plan the scene, list what each character wants, or clean up a draft, and only its answer goes into the final prompt. A Decider block works like a router: it switches blocks on or off depending on what the chat or the text contains, and several paths can fire at once. Each wire can carry exactly the part you want, such as the last user message or only the text inside a tag.
+![A Silly Canvas canvas: two planning passes that run at the same time, a fight detector, an energy stat with stages, and a background cast kept in memory](docs/canvas.png)
 
-When the canvas is switched off, SillyTavern builds the prompt exactly as it normally does.
+## What you can do
+
+- 📜 **Generate lore, events and info on the spot**, exactly when you want them (every few turns, when words come up, or by chance), and keep them in memory or a lorebook for when they matter.
+- 🔋 **Track health, energy, mana, any stat** in the background, with its own prompt for each level, so only what matters reaches the reply.
+- 🔁 **Run as many generations as you like**, each with its own instructions and conditions. Judge the answers by AI or by rules, and route them where they are needed.
+- ⚡ **Run independent tasks in parallel** (if your API allows), so it stays fast.
+- 💰 **Choose which model does what**: a cheap one for the chores, a strong one where it counts.
+- 👀 **See exactly what is sent** with every generation, shown right on the canvas.
+- 💾 **Save, load, import, export, copy and paste** prompts, blocks, groups, even whole canvases.
+
+Switch it off and SillyTavern builds the prompt exactly as it always has.
+
+![The State editor: energy across the chat, with its stages, what is sent at any message, and a message tried before it is sent](docs/state-window.png)
 
 ## Install
 
@@ -26,6 +38,28 @@ Silly Canvas works with Chat Completion APIs (OpenAI, OpenRouter, Claude, Gemini
 4. Send a message as usual.
 
 Blocks are read from top to bottom. If you want something earlier in the prompt, move its block higher.
+
+## Recipes
+
+Each of these is a few blocks. The sections further down explain every block in full.
+
+**Let it think before it writes.** Wire your prompts and the chat into a **Generate** block with the instruction *"List three beats for the next scene"*, and wire the Generate block into Output. The model plans first; only the plan reaches the writer, and the thinking never clutters the reply. Open the answer under the reply to read it.
+
+**Generate lore on the spot, and keep it.** Generate block A, *"Where are they now? One line."* → Generate block B, *"Five history facts about that place."* Give both the same condition, *Chat length / last speaker* → *number of your turns* → *every* 5 (or *Probability*, 30%), so they run together and cost nothing in between. On B, click **Save its answers…**: a Memory block appears, set to add each answer to the end and keep it in a lorebook entry. Pick the lorebook and give it the place names as keywords. From then on the facts come up whenever the place is mentioned, not before.
+
+**Track a stat.** Add a **State** block and double-click it. Start from *Energy that drains each turn*: it goes down every turn, goes up when someone rests or sleeps, and has three stages. Give a stage text (*"{{char}} is exhausted"*), a prompt from your library, or tick **Give each stage its own dot** and wire the *exhausted* dot to any block (a whole group, even) that should only run while exhausted. Swipes never count a turn twice.
+
+**A background cast that lives on.** A **Memory** block holds where each side character is. A Generate block on a cheap model reads the memory and the chat every three turns and saves the updated cast back into it. Put both on a group (a *blanket*) and you can switch the whole simulation off with one click. The reply only hears about the cast when you wire the memory into Output, or through a Decider when a character is nearby.
+
+**Route by what is happening.** A **Decider** with an output *Combat* that fires when the last message says *attack, sword* or *fight* (or when the AI answers yes to *"Is there a fight?"*) switches on your combat rules. Paths not taken are skipped and cost nothing.
+
+**Draft, critique, redraft.** Set **Repeat** on a Generate block and it works over its own answer again, stopping early when a pass changes nothing. For a separate critic, wire a second Generate block's answer back up to the first: that is a loop, with a limit you choose.
+
+**Parallel and cheap.** Generate blocks that do not feed each other go out at the same time; a ⚡ badge under the reply shows which went together. Give each one its own connection profile and model: a fast, cheap model for planning and summaries, while the reply itself stays on your chat's model.
+
+**See everything.** **Preview prompt** shows the full prompt the canvas would send, with every block's share of the tokens on the canvas. **What was actually sent** shows the last real send, and **What it was asked** under each answer shows exactly what that block's model saw.
+
+**Keep and share.** Save any block, several, or a whole group to the library and drop them into other canvases. Ctrl+C / Ctrl+V copies blocks between canvases and tabs as text you can send to someone. Whole canvases export and import as JSON, and can be pinned to a character or a chat.
 
 ## Blocks
 
