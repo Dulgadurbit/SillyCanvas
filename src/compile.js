@@ -22,16 +22,16 @@
  * no exceptions, because a graph you have to trace to predict is not a tool.
  */
 
-import { ctx, safe, NODE_TYPES, WIRE_KINDS, wiresInto, wiresOutOf, outputNode, togetherGroup, groupWires, deciderKeys, settings, activeGraph, saveWires } from './state.js?v=0.16.0';
-import { memoryForSend } from './memory.js?v=0.16.0';
-import { stPrompt, MARKER_SOURCES, getPrompt } from './library.js?v=0.16.0';
-import { applySelect } from './select.js?v=0.16.0';
-import { toEntry, selectLore, loreMessages, blockBooks, stripFromWorldInfo } from './lore.js?v=0.16.0';
-import { computeState, valueOutput, stageFor, stageText, parseStatePort, stagePortId } from './statevals.js?v=0.16.0';
+import { ctx, safe, NODE_TYPES, WIRE_KINDS, wiresInto, wiresOutOf, outputNode, togetherGroup, groupWires, deciderKeys, settings, activeGraph, saveWires } from './state.js?v=0.17.0';
+import { memoryForSend } from './memory.js?v=0.17.0';
+import { stPrompt, MARKER_SOURCES, getPrompt } from './library.js?v=0.17.0';
+import { applySelect } from './select.js?v=0.17.0';
+import { toEntry, selectLore, loreMessages, blockBooks, stripFromWorldInfo } from './lore.js?v=0.17.0';
+import { computeState, valueOutput, stageFor, stageText, parseStatePort, stagePortId } from './statevals.js?v=0.17.0';
 
 /** A library prompt's text, for stages linked to one. */
 const libraryText = (id) => safe(() => getPrompt(id)?.content) ?? null;
-import { holds } from './expr.js?v=0.16.0';
+import { holds } from './expr.js?v=0.17.0';
 
 /* ------------------------------------------------------------------ */
 /* live context                                                        */
@@ -42,10 +42,15 @@ import { holds } from './expr.js?v=0.16.0';
  * Anything that throws resolves to null and is reported as unresolved rather
  * than silently becoming an empty string.
  */
-export async function gatherContext({ dryRun = false } = {}) {
+export async function gatherContext({ dryRun = false, swipe = false } = {}) {
     const c = ctx();
     const card = safe(() => c.getCharacterCardFields()) ?? {};
-    const chat = safe(() => Array.isArray(c.chat) ? c.chat : []) ?? [];
+    let chat = safe(() => Array.isArray(c.chat) ? c.chat : []) ?? [];
+    // A swipe writes a new version of the last reply. That reply is still in
+    // the chat while the new one is being made, and SillyTavern leaves it out
+    // of its own prompt; so must the canvas, or the model is shown the answer
+    // it is meant to replace (and a History block ends on it).
+    if (swipe && chat.length && !chat[chat.length - 1]?.is_user) chat = chat.slice(0, -1);
 
     listenForActivations(c);
     const scanStarted = Date.now();
@@ -1118,7 +1123,26 @@ export function collect(graph, targetId, live, results = {}, decisions = {}, { r
                 memo.set(nodeId, []);
                 return [];
             }
-            const out = generateOutput(node, results, live).map(m => ({ ...m, __y: node.y }));
+            let out = generateOutput(node, results, live).map(m => ({ ...m, __y: node.y }));
+            // "Pass on everything": what was wired into it goes on down the
+            // canvas too, before its answer, instead of stopping at the wall.
+            if (node.forward === 'all') {
+                const through = [];
+                const ins = wiresInto(graph, nodeId)
+                    .map(w => ({ wire: w, src: graph.nodes[w.from] }))
+                    .filter(x => x.src && !cut.has(x.src.id) && wireMode(x.wire) === 'send')
+                    .filter(x => x.src.type !== NODE_TYPES.DECIDER || picks(decisionFor(x.src), x.wire.port))
+                    .sort((a, b) => byY(a.src, b.src));
+                for (const { wire, src } of ins) {
+                    const up = src.type === NODE_TYPES.STATE
+                        ? (() => { contribute(src.id); const t = stateOutputFor(src, wire.port, live); return t ? [{ role: src.role || 'system', content: t, __y: src.y }] : []; })()
+                        : applySelect(contribute(src.id), wire.select, live);
+                    if (!up.length) continue;
+                    if (wire.condition && !wireHolds(wire, live, textOf(up))) continue;
+                    through.push(...up.map(m => ({ ...m, __y: Math.min(m.__y ?? src.y, node.y - 0.001) })));
+                }
+                out = [...through, ...out];
+            }
             keyOf.set(nodeId, node.y);
             if (results?.[node.id] === undefined) pending.push(node.id);
             trace.push({

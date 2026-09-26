@@ -16,11 +16,11 @@
  *    recorded as the error, the run continues, and you see it in the trace.
  */
 
-import { ctx, safe, settings, save as saveSettings, NODE_TYPES, togetherGroup, loopWires, loopSection, activeGraph } from './state.js?v=0.16.0';
-import { compile, collect, generateOrder, generateLevels, gatherContext, evaluateCondition, liveNodes, generateDeps, textOf, picks, wireHolds } from './compile.js?v=0.16.0';
-import { plannedSaves, writeSaves, mirrorToLorebook } from './memory.js?v=0.16.0';
-import { jevYesNo, jevSort } from './jev.js?v=0.16.0';
-import { applySelect } from './select.js?v=0.16.0';
+import { ctx, safe, settings, save as saveSettings, NODE_TYPES, togetherGroup, loopWires, loopSection, activeGraph } from './state.js?v=0.17.0';
+import { compile, collect, generateOrder, generateLevels, gatherContext, evaluateCondition, liveNodes, generateDeps, textOf, picks, wireHolds } from './compile.js?v=0.17.0';
+import { plannedSaves, writeSaves, mirrorToLorebook } from './memory.js?v=0.17.0';
+import { jevYesNo, jevSort } from './jev.js?v=0.17.0';
+import { applySelect } from './select.js?v=0.17.0';
 
 /** The connection the chat itself is using, when a block does not name one. */
 function currentProfileId() {
@@ -476,10 +476,17 @@ export function describeCutoff(title, usage, finish) {
  * @param {(entry: object) => void} [options.onResult] called as each block finishes, so its answer can be shown while the rest run
  * @returns {Promise<{plan: object, results: Record<string,string>, thoughts: Array}>}
  */
-export async function run(graph, { dryRun = false, signal = null, onStage = null, onResult = null } = {}) {
+export async function run(graph, { dryRun = false, signal = null, onStage = null, onResult = null, swipe = false, reuse = null } = {}) {
     graph = activeGraph(graph);
-    const live = await gatherContext({ dryRun });
+    const live = await gatherContext({ dryRun, swipe });
     const results = {};
+    // A swipe that keeps the Generate answers of the reply it replaces: those
+    // blocks are not asked again, only the reply is new.
+    const reused = [];
+    for (const [id, text] of Object.entries(reuse ?? {})) {
+        const n = graph.nodes[id];
+        if (n?.type === NODE_TYPES.GENERATE && typeof text === 'string') { results[id] = text; reused.push(id); }
+    }
     const thoughts = [];
     const failures = [];
     const cutoffs = [];
@@ -803,7 +810,7 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
         }
         if (saves.some(sv => sv.node.lore?.on)) safe(() => saveSettings());     // the entry it wrote, to find it again
     }
-    return { plan, results, thoughts, failures, cutoffs, rescued, throttled, saves, saveProblems };
+    return { plan, results, thoughts, failures, cutoffs, rescued, throttled, saves, saveProblems, reused };
 }
 
 /**

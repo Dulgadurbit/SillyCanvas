@@ -16,13 +16,13 @@
  * generation is worse than one that does nothing.
  */
 
-import { settings, save, resolveGraph, ctx, safe } from './src/state.js?v=0.16.0';
-import { run, callCount } from './src/run.js?v=0.16.0';
-import * as UI from './src/ui.js?v=0.16.0';
-import { jevSettings, jevYesNo } from './src/jev.js?v=0.16.0';
-import { applyTheme } from './src/theme.js?v=0.16.0';
-import { renderThemeEditor } from './src/theme-editor.js?v=0.16.0';
-import { renderThoughts, attachThoughts, repaintAll, livePanel } from './src/thoughts.js?v=0.16.0';
+import { settings, save, resolveGraph, ctx, safe } from './src/state.js?v=0.17.0';
+import { run, callCount } from './src/run.js?v=0.17.0';
+import * as UI from './src/ui.js?v=0.17.0';
+import { jevSettings, jevYesNo } from './src/jev.js?v=0.17.0';
+import { applyTheme } from './src/theme.js?v=0.17.0';
+import { renderThemeEditor } from './src/theme-editor.js?v=0.17.0';
+import { renderThoughts, attachThoughts, repaintAll, livePanel, answersMode } from './src/thoughts.js?v=0.17.0';
 
 const MODULE = 'prompt-canvas';
 let lastRun = null;
@@ -36,6 +36,8 @@ let busy = false;
 let pendingThoughts = null;
 /** Aborts the Generate blocks of the run in progress, when you press Stop. */
 let currentAbort = null;
+/** What kind of send SillyTavern is making now: 'normal', 'swipe', 'regenerate', 'quiet'… */
+let genType = null;
 
 /* ------------------------------------------------------------------ */
 /* generation hooks                                                    */
@@ -63,17 +65,26 @@ async function build(dryRun) {
         return null;
     }
 
+    // Background calls from other extensions or /gen ("quiet" sends) are not
+    // your chat's reply: they keep their own prompt.
+    const type = dryRun ? null : genType;
+    if (type === 'quiet') return null;
+    const swipe = type === 'swipe';
+    const keep = swipe && safe(() => settings().swipeMode) === 'reuse' ? previousAnswers() : null;
+
     if (!dryRun) busy = true;
     try {
-        const calls = dryRun ? 0 : callCount(graph);
+        const calls = dryRun ? 0 : Math.max(0, callCount(graph) - Object.keys(keep?.answers ?? {}).length);
         if (calls) console.log(`[${MODULE}] "${graph.name}": ${calls} model call${calls === 1 ? '' : 's'} before the send`);
 
         if (calls) progress.start(graph.name, calls);
         if (!dryRun) { livePanel.clear(); pendingThoughts = null; }
         const abort = dryRun ? null : new AbortController();
         currentAbort = abort;
-        const { plan, thoughts, failures, cutoffs, aborted, rescued, throttled, saveProblems } = await run(graph, {
+        const { plan, thoughts, failures, cutoffs, aborted, rescued, throttled, saveProblems, reused } = await run(graph, {
             dryRun,
+            swipe,
+            reuse: keep?.answers ?? null,
             signal: abort?.signal ?? null,
             onStage: (node) => { progress.running(node.title); safe(() => livePanel.running(node)); },
             onResult: (entry) => safe(() => livePanel.result(entry)),
@@ -106,8 +117,11 @@ async function build(dryRun) {
             thoughts,
         };
 
-        if (!dryRun && thoughts.some(t => t.show && (String(t.text || '').trim() || t.failed))) {
-            pendingThoughts = thoughts.filter(t => t.show);
+        // A swipe that kept the earlier answers shows them again under the new reply.
+        const kept = (reused ?? []).length ? (keep?.thoughts ?? []).filter(t => reused.includes(t.id)).map(t => ({ ...t, show: true, kept: true })) : [];
+        const shown = [...kept, ...thoughts.filter(t => t.show)];
+        if (!dryRun && shown.some(t => String(t.text || '').trim() || t.failed)) {
+            pendingThoughts = shown;
         }
 
         if (throttled) {
@@ -128,6 +142,22 @@ async function build(dryRun) {
     } finally {
         if (!dryRun) busy = false;
     }
+}
+
+/**
+ * The Generate answers kept on the reply being swiped, by block, for a swipe
+ * that reuses them. Only answers that came back (not failures, not Decider
+ * choices) are reused.
+ */
+function previousAnswers() {
+    const chat = safe(() => ctx().chat) ?? [];
+    const last = chat[chat.length - 1];
+    if (!last || last.is_user) return null;
+    const list = (last.extra?.promptCanvas?.thoughts ?? []).filter(t => t?.id && !t.failed && !t.decision && typeof t.text === 'string');
+    if (!list.length) return null;
+    const answers = {};
+    for (const t of list) answers[t.id] = t.text;
+    return { answers, thoughts: list };
 }
 
 async function onChatCompletionPromptReady(eventData) {
@@ -312,6 +342,20 @@ function addLauncher() {
                     <div class="pc-settings-hint">
                         A quiet preview a moment after each change (nothing is sent). Switch it off on a very large chat if the canvas feels slow.
                     </div>
+                    <label for="pc-answers-mode" class="pc-settings-hint">Generate answers in the chat</label>
+                    <select id="pc-answers-mode" class="text_pole">
+                        <option value="folded">Folded: a line under the reply, click to read</option>
+                        <option value="open">Opened as they arrive</option>
+                        <option value="hidden">Hidden (still kept with the message)</option>
+                    </select>
+                    <label for="pc-swipe-mode" class="pc-settings-hint">When you swipe a reply</label>
+                    <select id="pc-swipe-mode" class="text_pole">
+                        <option value="rerun">Run the whole canvas again (new Generate answers)</option>
+                        <option value="reuse">Keep the Generate answers, write only a new reply</option>
+                    </select>
+                    <div class="pc-settings-hint">
+                        Keeping them is faster and cheaper; running again gives the planning passes a fresh go too.
+                    </div>
                     <label class="checkbox_label" for="pc-confirm-del">
                         <input id="pc-confirm-del" type="checkbox">
                         <span>Ask before deleting blocks and groups on the canvas</span>
@@ -368,6 +412,17 @@ function addLauncher() {
             settings().ui.confirmDelete = cdel.checked;
             save();
         });
+        const amode = block.querySelector('#pc-answers-mode');
+        amode.value = answersMode();
+        amode.addEventListener('change', () => {
+            settings().ui ??= {};
+            settings().ui.answersInChat = amode.value;
+            save();
+            safe(() => repaintAll());
+        });
+        const smode = block.querySelector('#pc-swipe-mode');
+        smode.value = safe(() => settings().swipeMode) === 'reuse' ? 'reuse' : 'rerun';
+        smode.addEventListener('change', () => { settings().swipeMode = smode.value; save(); });
         const ltok = block.querySelector('#pc-live-tokens');
         ltok.checked = safe(() => settings().ui?.liveTokens) !== false;
         ltok.addEventListener('change', () => {
@@ -516,6 +571,9 @@ export function getLastRun() {
             settings();
             safe(() => applyTheme());
 
+            if (c.eventTypes.GENERATION_STARTED) {
+                c.eventSource.on(c.eventTypes.GENERATION_STARTED, (type, _opts, dryRun) => { if (!dryRun) genType = type || 'normal'; });
+            }
             c.eventSource.on(c.eventTypes.CHAT_COMPLETION_PROMPT_READY, onChatCompletionPromptReady);
             c.eventSource.on(c.eventTypes.GENERATE_AFTER_COMBINE_PROMPTS, onTextCompletionPromptReady);
             c.eventSource.on(c.eventTypes.MESSAGE_RECEIVED, onMessageReceived);

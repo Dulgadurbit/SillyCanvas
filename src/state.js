@@ -20,7 +20,7 @@
  *   chat binding > character binding > activeGraphId
  */
 
-import { stagePortId, parseStatePort, ensureStageIds } from './statevals.js?v=0.16.0';
+import { stagePortId, parseStatePort, ensureStageIds } from './statevals.js?v=0.17.0';
 
 export const MODULE = 'prompt-canvas';
 export const META_KEY = 'promptCanvasGraph';

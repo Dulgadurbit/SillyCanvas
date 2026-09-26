@@ -14,8 +14,8 @@
 import {
     NODE_TYPES, WIRE_KINDS, connect, disconnect, removeNode, touchGraph, wiresInto, deciderKeys, outPorts, hasPorts,
     groupMembers, ungroup, deleteGroup, groupOf, inOffGroup, settleOnBlankets, gatherBlanket, setGroupEnabled, blanketAt, GROUP_MIN,
-} from './state.js?v=0.16.0';
-import { selectLabel } from './select.js?v=0.16.0';
+} from './state.js?v=0.17.0';
+import { selectLabel } from './select.js?v=0.17.0';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -321,7 +321,7 @@ export class Canvas {
                 if (w.mode === 'activate') { if (!nodes.has(src.id)) switches.add(src.id); continue; }
                 nodes.add(src.id);
                 switches.delete(src.id);
-                if (src.type !== NODE_TYPES.GENERATE) stack.push(src.id);
+                if (src.type !== NODE_TYPES.GENERATE || src.forward === 'all') stack.push(src.id);
             }
         }
         return { nodes, wires, switches };
@@ -799,7 +799,14 @@ export class Canvas {
             el.append(model);
         }
 
-        if (node.type === NODE_TYPES.GENERATE && Number(node.repeat) > 1) {
+        if (node.type === NODE_TYPES.GENERATE && node.forward === 'all') {
+            const pass = document.createElement('div');
+            pass.className = 'pc-node-repeat';
+            pass.innerHTML = '<i class="fa-solid fa-angles-down"></i> passes on its inputs and its answer';
+            pass.title = 'What is wired into this block goes on down the canvas too, not only the answer.';
+            el.append(pass);
+        }
+                if (node.type === NODE_TYPES.GENERATE && Number(node.repeat) > 1) {
             const rep = document.createElement('div');
             rep.className = 'pc-node-repeat';
             rep.innerHTML = `<i class="fa-solid fa-repeat"></i> up to ${Math.min(10, Math.round(node.repeat))} passes${node.repeatStopWhenSame !== false ? ', stops when nothing changes' : ''}`;

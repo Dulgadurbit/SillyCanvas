@@ -191,11 +191,13 @@ A Generate block is a model call inside your prompt. Common uses:
 - A pass that pulls out what each character knows or wants.
 - A second model that checks or rewrites something.
 
+**What it passes on.** By default a Generate block is a wall: only its answer goes on to the blocks below, and what it was asked stops there. Set **Passes on down the canvas** to *Its answer and everything wired into it* and the blocks wired into it go on too, in their places, followed by the answer.
+
 The **Instruction** box is for a short ask like "List three beats for the next scene". It is sent after the blocks wired in, so it is the last thing the model reads. Leave it empty and the lowest block wired in becomes the instruction instead. The block itself shows which it is.
 
 Each Generate block can use its own connection profile and model. The model box is a list you can search: click it to see every model the provider offers, or type part of a name (`claude haiku`, `flash`) to narrow it down, then Enter. A model id that is not in the list can be typed and used as it is. You can also click the model line on the block itself to change it without opening the settings. If you leave it on "same as the chat", it uses whatever model the chat is on at that moment. Thinking is off by default, because reasoning models can spend most of the token budget thinking and leave almost nothing for the answer.
 
-While the blocks run, their answers appear at the bottom of the chat, each one labelled with the block that wrote it. When the reply arrives they fold away under it. Open **What it was asked** on any answer to see the exact messages that block was sent.
+While the blocks run, their answers appear at the bottom of the chat as folded lines, each labelled with the block that wrote it; click one to read it. When the reply arrives they move under it. In the extension settings, **Generate answers in the chat** can open them as they arrive instead, or hide them (they are still kept with the message). Open **What it was asked** on any answer to see the exact messages that block was sent.
 
 Generate blocks that don't depend on each other are sent at the same time. If your provider refuses that, Silly Canvas switches to one at a time and tells you. Answers that went out together are marked under the reply with a ⚡ badge naming the others.
 
@@ -282,6 +284,12 @@ A chat pin beats a character pin, and a character pin beats the default. Hover t
 Save prompts to the library to reuse them across canvases. Drag a block onto the library panel to save it, or drag a saved prompt onto the canvas to use it.
 
 Entries are coloured by block type, the same colours as on the canvas. Any block can be saved, not just prompts: a Generate block with its model and settings, a Decider with its rules, a State block with its values. So can several picked blocks or a whole group, with the wires between them. Use **Save to library** in the side panel or the right-click menu. Drag it from the library onto any canvas to use it again. Prompt and SillyTavern blocks are saved as plain prompt text, so you can still edit them in the library.
+
+## Swipes
+
+A swipe writes a new version of the last reply. The reply being replaced is left out of the canvas's prompt, as SillyTavern leaves it out of its own. **When you swipe a reply** (extension settings) chooses what the Generate blocks do: run again for fresh answers, or keep the answers from before and write only a new reply, which is faster and costs nothing extra. Kept answers show under the new reply marked *kept*.
+
+Sends that other extensions or `/gen` make in the background ("quiet" sends) keep their own prompt; the canvas does not replace it.
 
 ## Checking what was sent
 

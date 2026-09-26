@@ -11,7 +11,17 @@
  * later turn — only the canvas decides what gets sent.
  */
 
-import { ctx, safe } from './state.js?v=0.16.0';
+import { ctx, safe, settings } from './state.js?v=0.17.0';
+
+/**
+ * How Generate answers appear in the chat: 'folded' (a closed line you can
+ * open, the default), 'open' (opened as they arrive), or 'hidden' (not shown;
+ * they are still kept with the message, so switching back shows them).
+ */
+export function answersMode() {
+    const m = safe(() => settings().ui?.answersInChat);
+    return m === 'open' || m === 'hidden' ? m : 'folded';
+}
 
 const KEY = 'promptCanvas';
 
@@ -35,6 +45,7 @@ export function attachThoughts(messageId, thoughts) {
     message.extra[KEY] = {
         at: Date.now(),
         thoughts: thoughts.map(t => ({
+            id: t.id ?? null,
             title: t.title,
             label: t.label,
             text: String(t.text ?? ''),
@@ -47,6 +58,7 @@ export function attachThoughts(messageId, thoughts) {
             decision: t.decision ?? null,
             cutoff: t.cutoff ?? null,
             together: Array.isArray(t.together) && t.together.length ? t.together : null,
+            kept: t.kept ?? null,
         })),
     };
     safe(() => c.saveChat());
@@ -67,6 +79,7 @@ export function renderThoughts(messageId) {
 
     mes.querySelector('.pc-thoughts')?.remove();
     if (!data?.thoughts?.length) return;
+    if (answersMode() === 'hidden') return;
 
     const block = document.createElement('div');
     block.className = 'pc-thoughts';
@@ -130,6 +143,7 @@ function thoughtElement(t, { open = false, pending = false, prompt = t.prompt ??
     meta.className = 'pc-thought-meta';
     const bits = [];
     if (pending) bits.push('thinking…');
+    if (t.kept) bits.push('kept from the swipe before');
     if (t.model) bits.push(t.model);
     else if (t.profile) bits.push(t.profile);
     if (t.usage?.completion_tokens) {
@@ -260,13 +274,13 @@ export const livePanel = (() => {
     return {
         /** A block has been sent. */
         running(node) {
-            if (node.showInChat === false) return;
+            if (node.showInChat === false || answersMode() === 'hidden') return;
             put(node.id, thoughtElement({ title: node.title, label: node.label || node.title, model: node.model || null }, { pending: true }));
         },
         /** A block has answered (or failed). Opened, so it can be read at once. */
         result(entry) {
-            if (!entry.show) { rows.get(entry.id)?.remove(); rows.delete(entry.id); return; }
-            put(entry.id, thoughtElement(entry, { open: true }));
+            if (!entry.show || answersMode() === 'hidden') { rows.get(entry.id)?.remove(); rows.delete(entry.id); return; }
+            put(entry.id, thoughtElement(entry, { open: answersMode() === 'open' }));
         },
         /** Stopped: keep the answers that came back, drop the spinners. */
         dropPending() {

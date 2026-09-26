@@ -14,23 +14,23 @@ import {
     chatBinding, setChatBinding, characterBinding, setCharacterBinding,
     exportGraph, importGraph, blankGraph, isFolderCollapsed, setFolderCollapsed, togetherGroup,
     newDeciderKey, removeDeciderKey, onGraphTouched, duplicateNode, newStateValue, groupNodes, ungroup, groupMembers, createBlanket, inOffGroup,
-} from './state.js?v=0.16.0';
-import { applyTheme } from './theme.js?v=0.16.0';
-import { makeClip, pasteClip, readClip, toClipboard, fromClipboard, lastClip, describeClip } from './clip.js?v=0.16.0';
-import { renderThemeEditor } from './theme-editor.js?v=0.16.0';
-import * as H from './history.js?v=0.16.0';
-import * as L from './library.js?v=0.16.0';
-import { compile, gatherContext, resolveNode, textOf, generateLevels, emissionCounts, wirePreview, countTokens, countTextTokens, routingMode, explainDecider, deciderInputList, collect } from './compile.js?v=0.16.0';
-import { LORE_POSITIONS } from './lore.js?v=0.16.0';
-import { computeState, stageFor, NUDGE_KEY } from './statevals.js?v=0.16.0';
-import { openStateWindow, closeStateWindow } from './state-window.js?v=0.16.0';
-import { memoryAt, memoryHistory, setMemoryNow, mirrorToLorebook, lorebookNames, DECIDER_SAVES } from './memory.js?v=0.16.0';
-import { check as checkFormula } from './expr.js?v=0.16.0';
-import { DEFAULT_SELECT, isActive as selectActive, selectLabel } from './select.js?v=0.16.0';
-import { run, profileName, effectiveModel, callCount, testBlock, shapeForApi, inspectProfile, modelsForSource, sourceForBlock, cachedModels, fetchModelList, previewBlock } from './run.js?v=0.16.0';
-import { Canvas, WIRE_LABEL, TYPE_LABEL, TYPE_ICON } from './canvas.js?v=0.16.0';
-import { modelCombo } from './model-combo.js?v=0.16.0';
-import { jevReady } from './jev.js?v=0.16.0';
+} from './state.js?v=0.17.0';
+import { applyTheme } from './theme.js?v=0.17.0';
+import { makeClip, pasteClip, readClip, toClipboard, fromClipboard, lastClip, describeClip } from './clip.js?v=0.17.0';
+import { renderThemeEditor } from './theme-editor.js?v=0.17.0';
+import * as H from './history.js?v=0.17.0';
+import * as L from './library.js?v=0.17.0';
+import { compile, gatherContext, resolveNode, textOf, generateLevels, emissionCounts, wirePreview, countTokens, countTextTokens, routingMode, explainDecider, deciderInputList, collect } from './compile.js?v=0.17.0';
+import { LORE_POSITIONS } from './lore.js?v=0.17.0';
+import { computeState, stageFor, NUDGE_KEY } from './statevals.js?v=0.17.0';
+import { openStateWindow, closeStateWindow } from './state-window.js?v=0.17.0';
+import { memoryAt, memoryHistory, setMemoryNow, mirrorToLorebook, lorebookNames, DECIDER_SAVES } from './memory.js?v=0.17.0';
+import { check as checkFormula } from './expr.js?v=0.17.0';
+import { DEFAULT_SELECT, isActive as selectActive, selectLabel } from './select.js?v=0.17.0';
+import { run, profileName, effectiveModel, callCount, testBlock, shapeForApi, inspectProfile, modelsForSource, sourceForBlock, cachedModels, fetchModelList, previewBlock } from './run.js?v=0.17.0';
+import { Canvas, WIRE_LABEL, TYPE_LABEL, TYPE_ICON } from './canvas.js?v=0.17.0';
+import { modelCombo } from './model-combo.js?v=0.17.0';
+import { jevReady } from './jev.js?v=0.17.0';
 
 let root = null;
 let canvas = null;
@@ -1667,7 +1667,9 @@ function renderHistoryFields(box, node) {
 
 function renderGenerateFields(box, node) {
     box.append(el('div', 'pc-hint',
-        'A send point. Whatever is wired into the top goes to the model, and its reply goes to whatever is wired to the bottom.'));
+        node.forward === 'all'
+            ? 'A send point. Whatever is wired into the top goes to the model; the blocks below get that same material and then its reply.'
+            : 'A send point. Whatever is wired into the top goes to the model, and its reply goes to whatever is wired to the bottom.'));
 
     const tied = tiedTo(node);
     if (tied.length) {
@@ -1740,6 +1742,16 @@ function renderGenerateFields(box, node) {
     (node.thinking ?? 'off') === 'off'
         ? 'Reasoning models spend their token budget thinking before they write, out of the same allowance as the reply. Off keeps the whole allowance for the answer.'
         : 'The model\u2019s hidden thinking comes out of the token limit above, so leave it room.'));
+
+    box.append(field('Passes on down the canvas', dropdown([
+        ['answer', 'Only its answer'],
+        ['all', 'Its answer and everything wired into it'],
+    ], node.forward === 'all' ? 'all' : 'answer', (v) => {
+        if (v === 'all') node.forward = 'all'; else delete node.forward;
+        touch(); canvas.render(); renderInspector();
+    }), node.forward === 'all'
+        ? 'The blocks wired into it go on to the blocks below as well, in their own places, followed by its answer. Handy when the next step needs both the material and the notes on it.'
+        : 'Its inputs stop here: only the answer travels on. The blocks below never see what it was asked.'));
 
     box.append(field('Its reply arrives as', dropdown(ROLES.map(r => [r, r]), node.outputRole || 'system', (v) => {
         node.outputRole = v; touch(); canvas.render();
@@ -3127,17 +3139,27 @@ function deciderTestBox(node) {
 
 function renderModelEditor(box, node) {
     const list = profiles();
-    const pairs = [['', list.length ? '— inherit the chat’s connection —' : 'No connection profiles found']];
-    for (const p of list) pairs.push([p.id, `${p.name}${p.model ? ` · ${p.model}` : ''}`]);
+    // What the chat is really on right now. A connection profile only keeps
+    // the model it was last saved with, so its name and saved model can be
+    // stale: switch the chat to another model without re-saving the profile
+    // and the profile still says the old one. Say which is which.
+    const chatModel = safe(() => effectiveModel({ type: NODE_TYPES.GENERATE, profileId: null, model: null })) || null;
+    const pairs = [['', list.length ? `— same as the chat${chatModel ? ` (now ${chatModel})` : ''} —` : 'No connection profiles found']];
+    for (const p of list) pairs.push([p.id, `${p.name}${p.model ? ` · saved with ${p.model}` : ''}`]);
 
+    const chosen = node.profileId ? list.find(p => p.id === node.profileId) : null;
+    let hint = node.type === NODE_TYPES.OUTPUT
+        ? 'Which connection profile answers this canvas. Its prompt post-processing handles the target model’s syntax.'
+        : 'The profile carries the API, the key and the prompt post-processing for its provider.';
+    if (chosen?.model && chatModel && chosen.model !== chatModel && !node.model) {
+        hint = `This profile was saved with ${chosen.model}, so that is the model this block uses, even though the chat is on ${chatModel} now. Pick a model below, re-save the profile in SillyTavern, or choose “same as the chat”.`;
+    }
     box.append(field('Send with', dropdown(pairs, node.profileId ?? '', (v) => {
         node.profileId = v || null;
         touch();
         canvas.render();
         renderInspector();
-    }), node.type === NODE_TYPES.OUTPUT
-        ? 'Which connection profile answers this canvas. Its prompt post-processing handles the target model’s syntax.'
-        : 'The profile carries the API, the key and the prompt post-processing for its provider.'));
+    }), hint));
 
     if (node.type === NODE_TYPES.GENERATE) renderModelPicker(box, node);
 }

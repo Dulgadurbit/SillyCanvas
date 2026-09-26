@@ -17,7 +17,7 @@
  * config.yaml switches it on.
  */
 
-import { ctx, safe, settings, save } from './state.js?v=0.16.0';
+import { ctx, safe, settings, save } from './state.js?v=0.17.0';
 
 export const JEV_URL = 'https://api.typesafe.ai/v1/systemone';
 export const JEV_MODEL = 'jev-latest';

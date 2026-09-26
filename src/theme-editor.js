@@ -5,8 +5,8 @@
  * palette button in the canvas header. Colours change live as you pick them.
  */
 
-import { safe } from './state.js?v=0.16.0';
-import * as T from './theme.js?v=0.16.0';
+import { safe } from './state.js?v=0.17.0';
+import * as T from './theme.js?v=0.17.0';
 
 const make = (tag, cls, text) => {
     const n = document.createElement(tag);

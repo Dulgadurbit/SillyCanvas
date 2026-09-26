@@ -36,7 +36,17 @@ assert.ok(box, 'panel in chat');
 assert.equal(box.querySelectorAll('.pc-thought-pending').length, 2);
 livePanel.result({ id: 'g1', title: 'Scene', text: 'THE SCENE PLAN', show: true });
 assert.equal(box.querySelectorAll('.pc-thought-pending').length, 1);
-assert.ok(box.querySelector('details').open, 'finished answer opens');
+assert.ok(!box.querySelector('details').open, 'finished answer stays folded by default');
+{
+    const st = SillyTavern.getContext().extensionSettings['prompt-canvas'];
+    st.ui = { ...(st.ui ?? {}), answersInChat: 'open' };
+    livePanel.result({ id: 'g1', title: 'Scene', text: 'THE SCENE PLAN', show: true });
+    assert.ok(box.querySelector('details').open, 'opens as it arrives when set to');
+    st.ui.answersInChat = 'hidden';
+    livePanel.running({ id: 'g3', title: 'Hidden' });
+    assert.ok(![...box.querySelectorAll('summary')].some(x => /Hidden/.test(x.textContent)), 'hidden: not shown');
+    delete st.ui.answersInChat;
+}
 livePanel.dropPending();
 assert.equal(box.querySelectorAll('details').length, 1, 'stop keeps finished, drops spinners');
 handlers.MESSAGE_RECEIVED.forEach(f => f(0));

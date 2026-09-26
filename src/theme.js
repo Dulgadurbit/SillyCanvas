@@ -12,7 +12,7 @@
  * always be got back, and a shared theme is a short piece of JSON.
  */
 
-import { settings, save, safe } from './state.js?v=0.16.0';
+import { settings, save, safe } from './state.js?v=0.17.0';
 
 /** The roles, in the order the editor lists them. */
 export const ROLES = [
