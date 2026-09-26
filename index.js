@@ -16,12 +16,13 @@
  * generation is worse than one that does nothing.
  */
 
-import { settings, save, resolveGraph, ctx, safe } from './src/state.js?v=0.15.0';
-import { run, callCount } from './src/run.js?v=0.15.0';
-import * as UI from './src/ui.js?v=0.15.0';
-import { applyTheme } from './src/theme.js?v=0.15.0';
-import { renderThemeEditor } from './src/theme-editor.js?v=0.15.0';
-import { renderThoughts, attachThoughts, repaintAll, livePanel } from './src/thoughts.js?v=0.15.0';
+import { settings, save, resolveGraph, ctx, safe } from './src/state.js?v=0.16.0';
+import { run, callCount } from './src/run.js?v=0.16.0';
+import * as UI from './src/ui.js?v=0.16.0';
+import { jevSettings, jevYesNo } from './src/jev.js?v=0.16.0';
+import { applyTheme } from './src/theme.js?v=0.16.0';
+import { renderThemeEditor } from './src/theme-editor.js?v=0.16.0';
+import { renderThoughts, attachThoughts, repaintAll, livePanel } from './src/thoughts.js?v=0.16.0';
 
 const MODULE = 'prompt-canvas';
 let lastRun = null;
@@ -304,6 +305,13 @@ function addLauncher() {
                     <div class="pc-settings-hint">
                         Tinted while the canvas is armed. Click to open, right-click to arm or disarm.
                     </div>
+                    <label class="checkbox_label" for="pc-live-tokens">
+                        <input id="pc-live-tokens" type="checkbox">
+                        <span>Count tokens on every block as I edit</span>
+                    </label>
+                    <div class="pc-settings-hint">
+                        A quiet preview a moment after each change (nothing is sent). Switch it off on a very large chat if the canvas feels slow.
+                    </div>
                     <label class="checkbox_label" for="pc-confirm-del">
                         <input id="pc-confirm-del" type="checkbox">
                         <span>Ask before deleting blocks and groups on the canvas</span>
@@ -311,6 +319,23 @@ function addLauncher() {
                     <div class="pc-settings-hint">
                         Off: they go at once, and Ctrl+Z brings them back.
                     </div>
+                    <div class="pc-settings-sub"><b>Jev (TypeSafe decision model)</b></div>
+                    <div class="pc-settings-hint">
+                        Deciders can ask <a href="https://docs.typesafe.ai" target="_blank" rel="noopener">Jev</a> instead of a chat model:
+                        yes/no rules and AI sorting in about a tenth of a second, answered with a probability.
+                        Choose it under <i>Answered by</i> on an AI rule or an AI-sorting Decider.
+                    </div>
+                    <label for="pc-jev-key" class="pc-settings-hint">TypeSafe API key</label>
+                    <input id="pc-jev-key" class="text_pole" type="password" autocomplete="off" placeholder="paste your key">
+                    <div class="pc-settings-hint">
+                        Kept in SillyTavern's settings file, like other extension settings.
+                        TypeSafe's API cannot be called straight from a web page, so Silly Canvas goes through
+                        SillyTavern's CORS proxy: set <code>enableCorsProxy: true</code> in <code>config.yaml</code> and restart SillyTavern.
+                    </div>
+                    <div id="pc-jev-test" class="menu_button menu_button_icon">
+                        <i class="fa-solid fa-vial"></i><span>Test Jev</span>
+                    </div>
+                    <div id="pc-jev-result" class="pc-settings-hint"></div>
                     <div class="pc-settings-sub"><b>Theme</b></div>
                     <div id="pc-theme-editor"></div>
                     <div id="pc-open-btn" class="menu_button menu_button_icon">
@@ -343,6 +368,14 @@ function addLauncher() {
             settings().ui.confirmDelete = cdel.checked;
             save();
         });
+        const ltok = block.querySelector('#pc-live-tokens');
+        ltok.checked = safe(() => settings().ui?.liveTokens) !== false;
+        ltok.addEventListener('change', () => {
+            settings().ui ??= {};
+            settings().ui.liveTokens = ltok.checked;
+            save();
+            safe(() => UI.scheduleTokenCount(0));
+        });
         paintThrottle();
         block.querySelector('#pc-unthrottle').addEventListener('click', () => {
             settings().concurrency = 2;
@@ -351,6 +384,19 @@ function addLauncher() {
             safe(() => globalThis.toastr?.info('Independent Generate blocks will go out together again.', 'Silly Canvas'));
         });
 
+        const jkey = block.querySelector('#pc-jev-key');
+        jkey.value = safe(() => jevSettings().key) ?? '';
+        jkey.addEventListener('input', () => { jevSettings().key = jkey.value.trim(); delete jevSettings().route; save(); });
+        block.querySelector('#pc-jev-test').addEventListener('click', async () => {
+            const out = block.querySelector('#pc-jev-result');
+            out.textContent = 'Asking Jev\u2026';
+            try {
+                const r = await jevYesNo('The knight draws his sword and charges at the dragon.', 'Is there a fight in this text?');
+                out.textContent = `Works. Asked "Is there a fight?" about a knight charging a dragon: ${Math.round(r.p * 100)}% yes, in ${r.ms} ms.`;
+            } catch (err) {
+                out.textContent = `Did not work: ${err?.message ?? err}`;
+            }
+        });
         block.querySelector('#pc-open-btn').addEventListener('click', () => UI.open());
         safe(() => renderThemeEditor(block.querySelector('#pc-theme-editor')));
     }
@@ -484,7 +530,13 @@ export function getLastRun() {
                 c.eventSource.on(type, () => {
                     if (ev === 'MESSAGE_DELETED') { safe(() => livePanel.clear()); pendingThoughts = null; }
                     setTimeout(() => safe(() => repaintAll()), 0);
+                    safe(() => { if (UI.isOpen()) UI.scheduleTokenCount(); });
                 });
+            }
+            // The chat grew: History blocks and the rest are counted again.
+            for (const ev of ['MESSAGE_RECEIVED', 'MESSAGE_SENT']) {
+                const type = c.eventTypes[ev];
+                if (type) c.eventSource.on(type, () => safe(() => { if (UI.isOpen()) UI.scheduleTokenCount(1000); }));
             }
             c.eventSource.on(c.eventTypes.CHAT_CHANGED, () => { safe(() => livePanel.clear()); UI.refreshIfOpen(); safe(() => repaintAll()); paintSendbar(); });
             document.addEventListener('pc-state', () => { paintSendbar(); const cb = document.getElementById('pc-enabled'); if (cb) cb.checked = armed(); });

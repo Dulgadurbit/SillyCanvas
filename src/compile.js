@@ -22,16 +22,16 @@
  * no exceptions, because a graph you have to trace to predict is not a tool.
  */
 
-import { ctx, safe, NODE_TYPES, WIRE_KINDS, wiresInto, wiresOutOf, outputNode, togetherGroup, groupWires, deciderKeys, settings, activeGraph, saveWires } from './state.js?v=0.15.0';
-import { memoryForSend } from './memory.js?v=0.15.0';
-import { stPrompt, MARKER_SOURCES, getPrompt } from './library.js?v=0.15.0';
-import { applySelect } from './select.js?v=0.15.0';
-import { toEntry, selectLore, loreMessages, blockBooks, stripFromWorldInfo } from './lore.js?v=0.15.0';
-import { computeState, valueOutput, stageFor, stageText, parseStatePort, stagePortId } from './statevals.js?v=0.15.0';
+import { ctx, safe, NODE_TYPES, WIRE_KINDS, wiresInto, wiresOutOf, outputNode, togetherGroup, groupWires, deciderKeys, settings, activeGraph, saveWires } from './state.js?v=0.16.0';
+import { memoryForSend } from './memory.js?v=0.16.0';
+import { stPrompt, MARKER_SOURCES, getPrompt } from './library.js?v=0.16.0';
+import { applySelect } from './select.js?v=0.16.0';
+import { toEntry, selectLore, loreMessages, blockBooks, stripFromWorldInfo } from './lore.js?v=0.16.0';
+import { computeState, valueOutput, stageFor, stageText, parseStatePort, stagePortId } from './statevals.js?v=0.16.0';
 
 /** A library prompt's text, for stages linked to one. */
 const libraryText = (id) => safe(() => getPrompt(id)?.content) ?? null;
-import { holds } from './expr.js?v=0.15.0';
+import { holds } from './expr.js?v=0.16.0';
 
 /* ------------------------------------------------------------------ */
 /* live context                                                        */
@@ -402,6 +402,8 @@ export function evaluateRule(cond, live, extra = {}) {
             const a = extra.ai?.[extra.aiKey?.(cond)];
             const q = String(cond.question ?? '').trim();
             if (!a) return { pass: false, why: `AI was not asked "${q}"`, needsAi: true };
+            if (a.engine === 'jev' && a.error) return { pass: false, why: `Jev could not be asked "${q.slice(0, 80)}" (${a.error}), so it counts as NO` };
+            if (a.engine === 'jev') return { pass: a.yes, why: `Jev is ${Math.round(100 * (a.p ?? 0))}% sure the answer to "${q.slice(0, 80)}" is YES (counts as YES from ${Math.round(100 * (Number(cond.threshold) || 0.5))}%)` };
             return { pass: a.yes, why: `AI answered ${a.yes ? 'YES' : 'NO'} to "${q.slice(0, 80)}"${a.unclear ? ' (its answer was unclear, so treated as NO)' : ''}` };
         }
         case 'expr': {
@@ -984,6 +986,21 @@ export async function countTokens(messages) {
     return Math.ceil(text.length / 4);
 }
 
+/**
+ * Tokens in one piece of text, and whether SillyTavern's tokenizer counted
+ * them (exact: true) or it is the rough four-characters-a-token estimate.
+ * @returns {Promise<{n: number, exact: boolean}>}
+ */
+export async function countTextTokens(text) {
+    text = String(text ?? '');
+    if (!text) return { n: 0, exact: true };
+    try {
+        const n = await ctx().getTokenCountAsync(text);
+        if (Number.isFinite(n) && n > 0) return { n, exact: true };
+    } catch { /* fall through */ }
+    return { n: Math.ceil(text.length / 4), exact: false };
+}
+
 const byY = (a, b) => (a.y - b.y) || (a.x - b.x) || String(a.id).localeCompare(String(b.id));
 
 /** What a Generate block puts into the prompt below it. */
@@ -1172,6 +1189,7 @@ export function collect(graph, targetId, live, results = {}, decisions = {}, { r
                     status: own.length ? 'in' : 'empty',
                     why: (!isTarget && gate(nodeId).why) || cond.why,
                     chars: textOf(own).length,
+                    text: textOf(own),
                 };
             }
         }
@@ -1241,6 +1259,7 @@ export function collect(graph, targetId, live, results = {}, decisions = {}, { r
                 const names = picked.entries.map(e => e.title || `#${e.uid}`);
                 entry.status = own.length ? 'in' : 'empty';
                 entry.chars = textOf(own).length;
+                entry.text = textOf(own);
                 entry.why = `${names.length} entr${names.length === 1 ? 'y' : 'ies'}${picked.estimated ? ' (estimated)' : ''}${names.length ? `: ${names.slice(0, 6).join(', ')}${names.length > 6 ? ` +${names.length - 6}` : ''}` : ''}`;
                 entry.lore = picked.entries.map(e => ({ title: e.title, book: e.book, why: e.why }));
             }

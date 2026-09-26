@@ -11,7 +11,7 @@
  * later turn — only the canvas decides what gets sent.
  */
 
-import { ctx, safe } from './state.js?v=0.15.0';
+import { ctx, safe } from './state.js?v=0.16.0';
 
 const KEY = 'promptCanvas';
 

@@ -65,3 +65,21 @@ max.value = '5'; max.dispatchEvent(new dom.window.Event('input'));
 assert.equal(loop.loop.max, 5);
 assert.match(document.querySelector('.pc-wire-label-loop').textContent, /5× max/);
 console.log('loop-ui: ok');
+
+// 5. with the settings pane folded away, "Loop settings…" opens it
+{
+    const root = document.querySelector('.pc-root');
+    root.classList.add('pc-hide-inspector');
+    const hit = document.querySelector(`.pc-wire-hit[data-id="${loop.id}"]`);
+    hit.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, clientX: 10, clientY: 10 }));
+    const item = [...document.querySelectorAll('.pc-menu-item')].find(i => /Loop settings/.test(i.textContent));
+    item.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+    assert.ok(!root.classList.contains('pc-hide-inspector'), 'the settings pane is shown');
+    assert.match(document.querySelector('.pc-inspector').textContent, /Run it again at most/);
+    // and clicking the loop's label does the same
+    root.classList.add('pc-hide-inspector');
+    document.querySelector('.pc-wire-label-loop').dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, button: 0 }));
+    window.dispatchEvent(new dom.window.MouseEvent('mouseup', { bubbles: true }));
+    assert.ok(!root.classList.contains('pc-hide-inspector'), 'label click shows the settings pane');
+    console.log('loop-ui (settings pane): ok');
+}

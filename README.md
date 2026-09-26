@@ -121,7 +121,7 @@ The values are worked out again from the chat every time, so swiping, regenerati
 
 ## Memory blocks
 
-A **Memory** block is prose the canvas remembers. It starts with the text you give it, and it is sent like a Prompt block. Wire a Generate block into it and that block's answer is **saved** into it (the wire shows *save*). The saved text is what the memory sends from the next message on. When the wire points back up the canvas, it is drawn round the side like a loop.
+A **Memory** block is prose the canvas remembers. It starts with the text you give it, and it is sent like a Prompt block. Wire a Generate block into it and that block's answer is **saved** into it (the wire shows *save*). Wire a **Decider output** into it and, whenever that output is chosen, what was decided is saved: the output's name, the words that matched, the text the Decider read, or your own text (`{{char}} got into a fight: {{matched}}`). **Keep its choices** on a Decider makes a log memory with every output wired to it. The saved text is what the memory sends from the next message on. When the wire points back up the canvas, it is drawn round the side like a loop.
 
 This is how the canvas keeps things between messages. A few examples:
 
@@ -175,7 +175,7 @@ To route on which lore fired, wire the Lorebook block into a Decider and set the
 - **Copy and paste** with Ctrl+C and Ctrl+V: a block, several picked blocks, or a whole group, with the wires between them. It pastes under the mouse, into the same canvas or any other one, and it lands on a blanket if you paste there. Ctrl+X cuts. The copy is plain text on your clipboard, so you can also paste it into another SillyTavern tab or send it to someone. Pasting ordinary text makes a new Prompt block with it.
 - **Duplicate** a block with Ctrl+D, its right-click menu, or the inspector. Ctrl+Shift+D also copies the wires coming into it.
 - **Hover or select** a block to light up everything that feeds it. Blocks that only switch it on get a dashed outline.
-- Each block shows roughly how many tokens it adds, from the last preview.
+- **Token counts on every block.** A moment after each change the canvas counts again (a quiet preview; nothing is sent), with SillyTavern's tokenizer for the current model: each block shows the tokens it adds, a Generate block shows what it is asked and the most it may answer (`1.2k → ≤500`), a folded group the total of its blocks, and Output the whole prompt. Switch it off under **Count tokens on every block as I edit** in the extension settings if a very large chat makes the canvas slow.
 
 ## Undo
 
@@ -193,7 +193,7 @@ A Generate block is a model call inside your prompt. Common uses:
 
 The **Instruction** box is for a short ask like "List three beats for the next scene". It is sent after the blocks wired in, so it is the last thing the model reads. Leave it empty and the lowest block wired in becomes the instruction instead. The block itself shows which it is.
 
-Each Generate block can use its own connection profile and model. If you leave it on "same as the chat", it uses whatever model the chat is on at that moment. Thinking is off by default, because reasoning models can spend most of the token budget thinking and leave almost nothing for the answer.
+Each Generate block can use its own connection profile and model. The model box is a list you can search: click it to see every model the provider offers, or type part of a name (`claude haiku`, `flash`) to narrow it down, then Enter. A model id that is not in the list can be typed and used as it is. You can also click the model line on the block itself to change it without opening the settings. If you leave it on "same as the chat", it uses whatever model the chat is on at that moment. Thinking is off by default, because reasoning models can spend most of the token budget thinking and leave almost nothing for the answer.
 
 While the blocks run, their answers appear at the bottom of the chat, each one labelled with the block that wrote it. When the reply arrives they fold away under it. Open **What it was asked** on any answer to see the exact messages that block was sent.
 
@@ -205,7 +205,7 @@ Some jobs work better in several goes, like cleaning AI phrasing out of a draft.
 
 **Passes**, on a single Generate block. Set **Passes** to 3 and the block runs up to three times, each pass working on its own last answer. It stops early when a pass changes nothing, so you only pay for the passes that did something.
 
-**Loop wires**, for a whole section. Drag a wire from a Generate block, or from a Decider key, back up to a block above it. Everything between the two ends runs again, and the result is handed back to the top as "your previous attempt". Each loop has a limit, shown on the wire, that you can change by clicking it.
+**Loop wires**, for a whole section. Drag a wire from a Generate block, or from a Decider key, back up to a block above it. Everything between the two ends runs again, and the result is handed back to the top as "your previous attempt". Each loop has a limit, shown on the wire: click it, or right-click the wire and choose **Loop settings…**, to change the limit, whether it stops early, and what the top block is told. Either one opens the settings pane if it is folded away.
 
 - A loop from a **Generate block** runs until the limit, or until the result stops changing, and then carries on down the canvas.
 - A loop from a **Decider key** runs each time that key is chosen. Once the limit is reached, the key is taken off the Decider's list, so it has to choose something else. For example: draft, check for "Elara", and if found go back and redraft, at most three times.
@@ -238,6 +238,10 @@ A new Decider starts empty and does nothing until you choose **how it routes**:
 - a yes or no question put to a model (for example "Does this text read like AI slop?")
 
 Several rules on one output can be joined with AND or OR, and any rule can be flipped with **NOT**. An AI question is only asked when nothing before it has already settled things.
+
+**Jev.** AI questions and AI sorting can be answered by [Jev](https://docs.typesafe.ai), TypeSafe's decision model, instead of a chat model: set **Answered by** to Jev. It answers with a probability (in about a tenth of a second, for a fraction of the cost), and you choose how sure it has to be. For AI sorting, each output gets its own probability in one call. Jev needs a TypeSafe API key (Extensions → Silly Canvas → Jev, where **Test Jev** checks it), and, because TypeSafe's API cannot be called straight from a web page, SillyTavern's CORS proxy: set `enableCorsProxy: true` in `config.yaml` and restart SillyTavern.
+
+**Keep what it decided.** Wire an output into a Memory block to save the decision (see Memory blocks).
 
 **Test it.** The test box at the bottom of the inspector takes some sample text and shows which outputs would fire, and why. Nothing is sent.
 

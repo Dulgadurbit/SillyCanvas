@@ -9,7 +9,7 @@
  * the message it was set at, so it goes if that message goes.
  */
 
-import { evaluate, holds } from './expr.js?v=0.15.0';
+import { evaluate, holds } from './expr.js?v=0.16.0';
 
 /** Where hand-set values live on a message: message.extra[NUDGE_KEY][blockId][valueId] = value */
 export const NUDGE_KEY = 'promptCanvasState';

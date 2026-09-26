@@ -14,21 +14,23 @@ import {
     chatBinding, setChatBinding, characterBinding, setCharacterBinding,
     exportGraph, importGraph, blankGraph, isFolderCollapsed, setFolderCollapsed, togetherGroup,
     newDeciderKey, removeDeciderKey, onGraphTouched, duplicateNode, newStateValue, groupNodes, ungroup, groupMembers, createBlanket, inOffGroup,
-} from './state.js?v=0.15.0';
-import { applyTheme } from './theme.js?v=0.15.0';
-import { makeClip, pasteClip, readClip, toClipboard, fromClipboard, lastClip, describeClip } from './clip.js?v=0.15.0';
-import { renderThemeEditor } from './theme-editor.js?v=0.15.0';
-import * as H from './history.js?v=0.15.0';
-import * as L from './library.js?v=0.15.0';
-import { compile, gatherContext, resolveNode, textOf, generateLevels, emissionCounts, wirePreview, countTokens, routingMode, explainDecider, deciderInputList, collect } from './compile.js?v=0.15.0';
-import { LORE_POSITIONS } from './lore.js?v=0.15.0';
-import { computeState, stageFor, NUDGE_KEY } from './statevals.js?v=0.15.0';
-import { openStateWindow, closeStateWindow } from './state-window.js?v=0.15.0';
-import { memoryAt, memoryHistory, setMemoryNow, mirrorToLorebook, lorebookNames } from './memory.js?v=0.15.0';
-import { check as checkFormula } from './expr.js?v=0.15.0';
-import { DEFAULT_SELECT, isActive as selectActive, selectLabel } from './select.js?v=0.15.0';
-import { run, profileName, effectiveModel, callCount, testBlock, shapeForApi, inspectProfile, modelsForSource, sourceForBlock, cachedModels, fetchModelList, previewBlock } from './run.js?v=0.15.0';
-import { Canvas, WIRE_LABEL, TYPE_LABEL, TYPE_ICON } from './canvas.js?v=0.15.0';
+} from './state.js?v=0.16.0';
+import { applyTheme } from './theme.js?v=0.16.0';
+import { makeClip, pasteClip, readClip, toClipboard, fromClipboard, lastClip, describeClip } from './clip.js?v=0.16.0';
+import { renderThemeEditor } from './theme-editor.js?v=0.16.0';
+import * as H from './history.js?v=0.16.0';
+import * as L from './library.js?v=0.16.0';
+import { compile, gatherContext, resolveNode, textOf, generateLevels, emissionCounts, wirePreview, countTokens, countTextTokens, routingMode, explainDecider, deciderInputList, collect } from './compile.js?v=0.16.0';
+import { LORE_POSITIONS } from './lore.js?v=0.16.0';
+import { computeState, stageFor, NUDGE_KEY } from './statevals.js?v=0.16.0';
+import { openStateWindow, closeStateWindow } from './state-window.js?v=0.16.0';
+import { memoryAt, memoryHistory, setMemoryNow, mirrorToLorebook, lorebookNames, DECIDER_SAVES } from './memory.js?v=0.16.0';
+import { check as checkFormula } from './expr.js?v=0.16.0';
+import { DEFAULT_SELECT, isActive as selectActive, selectLabel } from './select.js?v=0.16.0';
+import { run, profileName, effectiveModel, callCount, testBlock, shapeForApi, inspectProfile, modelsForSource, sourceForBlock, cachedModels, fetchModelList, previewBlock } from './run.js?v=0.16.0';
+import { Canvas, WIRE_LABEL, TYPE_LABEL, TYPE_ICON } from './canvas.js?v=0.16.0';
+import { modelCombo } from './model-combo.js?v=0.16.0';
+import { jevReady } from './jev.js?v=0.16.0';
 
 let root = null;
 let canvas = null;
@@ -264,7 +266,7 @@ function build() {
             if (ids.length > 1) { selected = ids; selectedKind = 'multi'; renderInspector(); }
             else if (selectedKind === 'multi') { selected = null; selectedKind = null; renderInspector(); }
         },
-        onChange: () => { renderStatus(); refreshPreview(); },
+        onChange: () => { renderStatus(); refreshPreview(); scheduleTokenCount(); },
         onOpen: (node) => {
             if (node?.type === NODE_TYPES.STATE) { canvas.select({ kind: 'node', id: node.id }); openStateEditor(node); return; }
             selected = node; selectedKind = 'node';
@@ -275,6 +277,8 @@ function build() {
             setTimeout(() => inspector.classList.remove('pc-flash'), 400);
         },
         onToast: (m) => toast(m, 'error'),
+        onReveal: (sel) => showSettings(sel),
+        onModelClick: (node, anchor) => openModelPopover(node, anchor),
         onHelp: (node) => {
             guideOpen = true;
             root.classList.remove('pc-hide-inspector');
@@ -413,10 +417,117 @@ function syncPaneToggles() {
     root._parts.inspBtn?.classList.toggle('pc-on', !root.classList.contains('pc-hide-inspector'));
 }
 
+/**
+ * Select something and make sure its settings are on screen. The inspector
+ * can be folded away (it starts that way on a narrow window), and a
+ * "Settings…" item that selects into a hidden pane looks like it did nothing.
+ */
+function showSettings(sel) {
+    if (root.classList.contains('pc-hide-inspector')) {
+        root.classList.remove('pc-hide-inspector');
+        syncPaneToggles();
+        requestAnimationFrame(() => canvas.render());
+    }
+    canvas.select(sel);
+    const insp = root._parts.inspector;
+    insp.scrollTop = 0;
+    insp.classList.add('pc-flash');
+    setTimeout(() => insp.classList.remove('pc-flash'), 400);
+}
+
 /** Mark the graph dirty and keep an open preview in step with the edit. */
 function touch() {
     touchGraph(current);
     refreshPreview();
+    scheduleTokenCount();
+}
+
+/* ------------------------------------------------------------------ */
+/* live token counts                                                   */
+/* ------------------------------------------------------------------ */
+
+let tokenTimer = null;
+let tokenRun = 0;
+const liveTokensOn = () => safe(() => settings().ui?.liveTokens) !== false;
+
+/**
+ * Count every block's tokens a moment after you stop editing: a quiet dry
+ * run of the whole canvas (nothing is sent), then SillyTavern's tokenizer
+ * over each block's own text.
+ */
+export function scheduleTokenCount(delay = 700) {
+    clearTimeout(tokenTimer);
+    if (!canvas) return;
+    if (!liveTokensOn()) { canvas.setTokens(null); return; }
+    tokenTimer = setTimeout(() => { if (isOpen()) countBlockTokens(); }, delay);
+}
+
+async function countBlockTokens() {
+    const run = ++tokenRun;
+    const graph = current;
+    if (!graph) return;
+    let plan;
+    try { plan = await compile(graph, { dryRun: true }); } catch { return; }
+    if (run !== tokenRun || graph !== current) return;
+    const map = await tokensFromPlan(plan);
+    if (run !== tokenRun || graph !== current) return;
+    canvas.setTokens(map);
+}
+
+/** Blocks whose own text can be counted even when nothing reaches them. */
+const LOOSE_COUNTED = new Set([NODE_TYPES.PROMPT, NODE_TYPES.ST, NODE_TYPES.HISTORY, NODE_TYPES.INJECTION, NODE_TYPES.MEMORY]);
+
+/** Recently counted texts, so an unchanged block is not counted again. */
+const tokenCache = new Map();
+async function tokensOf(text) {
+    const hit = tokenCache.get(text);
+    if (hit) return hit;
+    const r = await countTextTokens(text);
+    tokenCache.set(text, r);
+    if (tokenCache.size > 400) tokenCache.delete(tokenCache.keys().next().value);
+    return r;
+}
+
+/**
+ * @returns {Promise<Map<string, {own?:number, in?:number, out?:number, total?:number, exact:boolean}>>}
+ */
+export async function tokensFromPlan(plan) {
+    const map = new Map();
+    let exact = true;
+    // Every block's own text, from every place it was used: the final
+    // prompt, and the questions put to Generate blocks.
+    const entries = [...(plan.trace ?? []), ...(plan.stages ?? []).flatMap(st => st.trace ?? [])];
+    for (const e of entries) {
+        if (map.has(e.id) || e.status !== 'in' || !e.text) continue;
+        const r = await tokensOf(e.text);
+        exact &&= r.exact;
+        map.set(e.id, { own: r.n, exact: r.exact });
+    }
+    // Blocks the walk never reached (not wired through yet, or on a path a
+    // Decider did not take): still worth knowing what they would add.
+    const graph = current;
+    const loose = Object.values(graph?.nodes ?? {}).filter(n => !map.has(n.id) && n.enabled !== false && LOOSE_COUNTED.has(n.type));
+    if (loose.length) {
+        let live = plan.live ?? liveCache;
+        if (!live) { try { live = await refreshLive(); } catch { live = null; } }
+        for (const n of live ? loose : []) {
+            const own = safe(() => resolveNode(n, live).messages) ?? [];
+            const text = textOf(own);
+            if (!text) continue;
+            const r = await tokensOf(text);
+            map.set(n.id, { own: r.n, exact: r.exact, loose: true });
+        }
+    }
+    for (const st of plan.stages ?? []) {
+        if (st.final) {
+            const r = plan.tokens ? { n: plan.tokens, exact: true } : await tokensOf(textOf(st.messages ?? []));
+            map.set(st.id, { total: r.n, exact: r.exact && exact });
+            continue;
+        }
+        const r = await tokensOf(textOf(st.messages ?? []));
+        map.set(st.id, { in: r.n, out: Number(st.maxTokens) || 0, exact: r.exact });
+    }
+    return map;
 }
 
 function renderAll() {
@@ -427,6 +538,7 @@ function renderAll() {
     renderSidebar();
     renderInspector();
     canvas.render();
+    scheduleTokenCount(150);
 }
 
 /** The theme editor, dropped down from the palette button. */
@@ -1323,6 +1435,13 @@ function renderNodeInspector(box) {
             mem.addEventListener('click', () => saveAnswersToMemory(node));
             actions.append(mem);
         }
+        if (node.type === NODE_TYPES.DECIDER) {
+            const mem = el('div', 'pc-btn menu_button');
+            mem.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> Keep its choices\u2026';
+            mem.title = 'Write what it decides into a Memory block, for the messages after this one';
+            mem.addEventListener('click', () => saveDecisionsToMemory(node));
+            actions.append(mem);
+        }
         if (node.type !== NODE_TYPES.PROMPT) {
             const keep = el('div', 'pc-btn menu_button');
             keep.innerHTML = '<i class="fa-solid fa-bookmark"></i> Save to library';
@@ -2176,7 +2295,7 @@ const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
  * The controls for one rule. Blocks use one to decide whether they are
  * included; each Decider key has a list of them.
  */
-function renderRuleFields(box, c, { label = 'Rule', modes = BLOCK_RULE_MODES, scopes = SEARCH_SCOPES } = {}) {
+function renderRuleFields(box, c, { label = 'Rule', modes = BLOCK_RULE_MODES, scopes = SEARCH_SCOPES, decider = null } = {}) {
     const redraw = () => { touch(); canvas.render(); renderInspector(); };
     const soft = () => { touch(); canvas.render(); };
     const num = (value, onInput, attrs = {}) => {
@@ -2267,8 +2386,7 @@ function renderRuleFields(box, c, { label = 'Rule', modes = BLOCK_RULE_MODES, sc
         q.value = c.question ?? '';
         q.addEventListener('input', () => { c.question = q.value; soft(); });
         box.append(field('Question', q, 'The model is shown the text coming in and asked this, answering only YES or NO. YES matches. It is one small extra model call, made only if no key above has already matched. An unclear answer counts as NO.'));
-        const m = text(c.model, v => { c.model = v || null; touch(); }, 'same model as the chat');
-        box.append(field('Model (optional)', m, 'A small, fast model is plenty for a yes/no question.'));
+        renderAiEngine(box, c, decider, 'rule');
     }
 
     if (c.mode === 'length') {
@@ -2435,7 +2553,8 @@ function renderMemoryFields(box, node) {
     const chips = el('div', 'pc-dest-chips');
     for (const w of savers) {
         const src = current.nodes[w.from];
-        const chip = el('span', 'pc-dest-chip', `\u2913 ${src?.title || 'missing block'}`);
+        const skey = src?.type === NODE_TYPES.DECIDER ? [...(src.keys ?? []), src.fallback].find(k => k?.id === w.port) : null;
+        const chip = el('span', 'pc-dest-chip', `\u2913 ${src?.title || 'missing block'}${skey ? ` \u2192 ${skey.name || 'output'}` : ''}`);
         chip.title = 'Click for this save\u2019s settings (what part of the answer, and when)';
         chip.style.cursor = 'pointer';
         chip.addEventListener('click', () => canvas.select({ kind: 'wire', id: w.id }));
@@ -2447,18 +2566,23 @@ function renderMemoryFields(box, node) {
     }
     if (!savers.length) chips.append(el('span', 'pc-hint pc-dest-none', 'nothing saves into it yet'));
     const gens = Object.values(current.nodes).filter(n => n.type === NODE_TYPES.GENERATE && !savers.some(w => w.from === n.id));
+    const outs = Object.values(current.nodes).filter(n => n.type === NODE_TYPES.DECIDER)
+        .flatMap(d => [...(d.keys ?? []), d.fallback].filter(Boolean).map(k => ({ d, k })))
+        .filter(({ d, k }) => !savers.some(w => w.from === d.id && w.port === k.id));
     const pick = el('select', 'pc-select text_pole');
-    pick.append(Object.assign(el('option', '', gens.length ? '+ save the answer of\u2026' : 'Add a Generate block to save its answers'), { value: '' }));
-    for (const n of gens) pick.append(Object.assign(el('option', '', n.title || 'Generate'), { value: n.id }));
+    pick.append(Object.assign(el('option', '', gens.length || outs.length ? '+ save into it\u2026' : 'Add a Generate block or a Decider to save into it'), { value: '' }));
+    for (const n of gens) pick.append(Object.assign(el('option', '', `the answer of ${n.title || 'Generate'}`), { value: n.id }));
+    for (const { d, k } of outs) pick.append(Object.assign(el('option', '', `when ${d.title || 'Decider'} chooses ${k.name || 'output'}`), { value: `${d.id}|${k.id}` }));
     pick.addEventListener('change', () => {
         if (!pick.value) return;
-        const res = connect(current, pick.value, node.id, WIRE_KINDS.SAVE);
+        const [fromId, port] = pick.value.split('|');
+        const res = connect(current, fromId, node.id, WIRE_KINDS.SAVE, { port: port ?? null });
         if (!res.ok) toast(res.reason, 'warning');
         touch(); canvas.render(); renderInspector();
     });
     const saverBox = el('div', 'pc-dest');
     saverBox.append(chips, pick);
-    box.append(field('Saved into it by', saverBox, 'Or drag from a Generate block\u2019s bottom dot onto this block. A Generate block can read this memory and save into it too: it reads what was here, and its answer is here from the next message on.'));
+    box.append(field('Saved into it by', saverBox, 'Or drag from a Generate block\u2019s bottom dot, or a Decider\u2019s output dot, onto this block. A Generate block can read this memory and save into it too: it reads what was here, and its answer is here from the next message on. A Decider saves what it decided whenever that output is chosen.'));
 
     // Also in a lorebook.
     node.lore ??= { on: false, book: '', title: '', keys: '', constant: false };
@@ -2534,11 +2658,70 @@ function saveAnswersToMemory(gen) {
     toast(existing ? 'Its answers already go into this memory.' : 'Its answers are now kept here, added to the end. Pick a lorebook and keywords below, or switch the lorebook off to keep them only in the chat.', 'success');
 }
 
+/**
+ * A Decider's choices, kept: a Memory block beside it that each output saves
+ * its name into, added to the end, so it reads as a log of what was decided.
+ */
+function saveDecisionsToMemory(dec) {
+    const keys = (dec.keys ?? []).filter(Boolean);
+    if (!keys.length) { toast('Give the Decider an output first, then its choices can be kept.', 'warning'); return; }
+    const existing = Object.values(current.wires).find(w => w.kind === WIRE_KINDS.SAVE && w.from === dec.id);
+    let mem = existing ? current.nodes[existing.to] : null;
+    if (!mem) {
+        mem = addNode(current, NODE_TYPES.MEMORY, Math.round(dec.x + (dec.w || 260) + 60), Math.round(dec.y));
+        mem.title = `${dec.title || 'Decider'} (log)`;
+        mem.saveMode = 'keep';
+        mem.keep = 10;
+        for (const k of keys) {
+            const res = connect(current, dec.id, mem.id, WIRE_KINDS.SAVE, { port: k.id });
+            if (res.ok) { res.wire.save = 'text'; res.wire.saveText = '{{result}} ({{time}})'; }
+        }
+        landed([mem.id]);
+    }
+    root.classList.remove('pc-hide-inspector');
+    syncPaneToggles();
+    canvas.select({ kind: 'node', id: mem.id });
+    renderAll();
+    toast(existing ? 'Its choices already go into this memory.' : 'Each choice is now written into this memory, keeping the last 10. It is not wired anywhere, so it is not sent: wire it where the model should read it. Click a save wire to change what it writes.', 'success');
+}
+
 /** A save wire: what part of the answer is kept, and when. */
 function renderSaveWireInspector(box, wire, from, to) {
+    if (from?.type === NODE_TYPES.DECIDER) return renderDeciderSaveInspector(box, wire, from, to);
     box.append(el('div', 'pc-insp-title', 'Save into memory'));
     box.append(el('div', 'pc-hint', `The answer of "${from?.title ?? '?'}" is saved into "${to?.title ?? '?'}" (${{ append: 'added to the end', keep: 'added, keeping the last few paragraphs' }[to?.saveMode] ?? 'replacing its text'}). It is there from the next message on; this send still uses what the memory held before.`));
     renderSelectFields(box, wire);
+    renderWireCondition(box, wire);
+    const cut = el('div', 'pc-btn menu_button pc-danger');
+    cut.innerHTML = '<i class="fa-solid fa-scissors"></i> Stop saving';
+    cut.addEventListener('click', () => { disconnect(current, wire.id); selected = null; canvas.render(); renderInspector(); });
+    box.append(cut);
+}
+
+/** A Decider output saving into a memory: when, and what. */
+function renderDeciderSaveInspector(box, wire, from, to) {
+    const key = [...(from.keys ?? []), from.fallback].find(k => k?.id === wire.port);
+    const how = { append: 'added to the end', keep: 'added, keeping the last few paragraphs' }[to?.saveMode] ?? 'replacing its text';
+    box.append(el('div', 'pc-insp-title', 'Save a decision into memory'));
+    box.append(el('div', 'pc-hint', `Whenever "${from.title}" chooses ${key?.name ?? 'this output'}, something is saved into "${to?.title ?? '?'}" (${how}). It is there from the next message on.`));
+    const what = wire.save ?? 'name';
+    box.append(field('Save', dropdown(Object.entries(DECIDER_SAVES), what, (v) => {
+        if (v === 'name') delete wire.save; else wire.save = v;
+        touch(); canvas.render(); renderInspector();
+    }), {
+        name: `Saves "${key?.name ?? 'the output'}". With a memory that adds to the end, that is a log of what was decided.`,
+        matched: 'The words its rules matched, e.g. "sword, attack". When no word rule matched, the output\u2019s name.',
+        input: 'Everything wired into the Decider, as it read it: keep the message that set it off.',
+        text: '',
+    }[what]));
+    if (what === 'text') {
+        const t = el('textarea', 'text_pole pc-textarea');
+        t.rows = 3;
+        t.placeholder = 'e.g. Turn {{turn}}: a fight broke out ({{matched}}).';
+        t.value = wire.saveText ?? '';
+        t.addEventListener('input', () => { wire.saveText = t.value; touch(); });
+        box.append(field('Text to save', t, '{{result}} is the output\u2019s name, {{matched}} the words that matched, {{input}} the text the Decider read. SillyTavern macros such as {{char}}, {{user}} and {{time}} work too.'));
+    }
     renderWireCondition(box, wire);
     const cut = el('div', 'pc-btn menu_button pc-danger');
     cut.innerHTML = '<i class="fa-solid fa-scissors"></i> Stop saving';
@@ -2629,7 +2812,12 @@ function destinationPicker(node, key) {
     const chips = el('div', 'pc-dest-chips');
     for (const w of out) {
         const target = current.nodes[w.to];
-        const chip = el('span', `pc-dest-chip${w.loop ? ' pc-dest-loop' : ''}`, `${w.loop ? `\u21ba back to ${target?.title || 'missing block'}, up to ${w.loop.max ?? 3}\u00d7` : `\u2192 ${target?.title || 'missing block'}`}`);
+        const chip = el('span', `pc-dest-chip${w.loop ? ' pc-dest-loop' : ''}`, `${w.loop ? `\u21ba back to ${target?.title || 'missing block'}, up to ${w.loop.max ?? 3}\u00d7` : w.kind === WIRE_KINDS.SAVE ? `\u2913 saves into ${target?.title || 'missing block'}` : `\u2192 ${target?.title || 'missing block'}`}`);
+        if (w.kind === WIRE_KINDS.SAVE) {
+            chip.style.cursor = 'pointer';
+            chip.title = 'Click for what it saves';
+            chip.addEventListener('click', (e) => { if (!e.target.closest('.pc-dest-x')) showSettings({ kind: 'wire', id: w.id }); });
+        }
         const x = el('i', 'fa-solid fa-xmark pc-dest-x');
         x.title = 'Remove this connection';
         x.addEventListener('click', () => { disconnect(current, w.id); touch(); canvas.render(); renderInspector(); });
@@ -2794,7 +2982,7 @@ function renderDeciderFields(box, node) {
             }
             k.conditions.forEach((c, ci) => {
                 const rule = el('div', 'pc-key-rule');
-                renderRuleFields(rule, c, { label: k.conditions.length > 1 ? `Rule ${ci + 1}` : 'Rule', modes: KEY_RULE_MODES, scopes: KEY_SCOPES });
+                renderRuleFields(rule, c, { label: k.conditions.length > 1 ? `Rule ${ci + 1}` : 'Rule', modes: KEY_RULE_MODES, scopes: KEY_SCOPES, decider: node });
                 if (inputs.length > 1 && readsInput(c)) {
                     const pairs = [['', 'all inputs together'], ...inputs.map(x => [x.wireId, x.title])];
                     if (c.input && !inputs.some(x => x.wireId === c.input)) pairs.push([c.input, '(a wire that is gone)']);
@@ -2849,16 +3037,65 @@ function renderDeciderFields(box, node) {
         notes.value = node.sorter.instructions ?? '';
         notes.addEventListener('input', () => { node.sorter.instructions = notes.value; touch(); });
         box.append(field('Extra instructions', notes));
-        const m = el('input', 'text_pole');
-        m.placeholder = 'same model as the chat';
-        m.value = node.sorter.model ?? '';
-        m.addEventListener('input', () => { node.sorter.model = m.value || null; touch(); });
-        box.append(field('Model (optional)', m, 'A small, fast model is plenty. One short call per send.'));
+        renderAiEngine(box, node.sorter, node, 'sorter');
     }
 
     box.append(deciderTestBox(node));
 
     box.append(checkline('Show its choice in the chat', node.showInChat !== false, (v) => { node.showInChat = v; touch(); }));
+}
+
+/**
+ * Who answers an AI question or does the AI sorting: a chat model (through
+ * the Decider's connection, with a model you can pick), or Jev, TypeSafe's
+ * decision model, which answers with a probability instead of words.
+ * @param {object} holder  the AI rule, or the Decider's sorter settings
+ * @param {'rule'|'sorter'} kind
+ */
+function renderAiEngine(box, holder, decider, kind) {
+    const engine = holder.engine === 'jev' ? 'jev' : 'chat';
+    box.append(field('Answered by', dropdown([
+        ['chat', 'A chat model'],
+        ['jev', 'Jev (TypeSafe decision model)'],
+    ], engine, (v) => { if (v === 'jev') holder.engine = 'jev'; else delete holder.engine; touch(); canvas.render(); renderInspector(); }),
+    engine === 'jev'
+        ? (kind === 'sorter'
+            ? 'Jev reads the text and gives each output a probability, in one call of about a tenth of a second. It picks by your descriptions, so describe each output clearly.'
+            : 'Jev answers with how likely YES is, in about a tenth of a second and for a fraction of a chat model\u2019s cost. It never writes text.')
+        : ''));
+    if (engine === 'jev') {
+        if (!jevReady()) {
+            box.append(el('div', 'pc-hint pc-warn', 'Jev needs your TypeSafe API key: Extensions \u2192 Silly Canvas \u2192 Jev.'));
+        }
+        const pct = el('input', 'text_pole pc-wide-num');
+        pct.type = 'number'; pct.min = '1'; pct.max = '99';
+        pct.value = Math.round(100 * (Number(holder.threshold) || 0.5));
+        pct.addEventListener('input', () => {
+            const n = Math.max(1, Math.min(99, Number(pct.value) || 50));
+            holder.threshold = n / 100;
+            touch(); canvas.render();
+        });
+        const row = el('div', 'pc-row');
+        row.append(pct, el('span', 'pc-hint', '% sure or more'));
+        box.append(field(kind === 'sorter' ? 'An output fires when Jev is' : 'Counts as YES when Jev is', row,
+            kind === 'sorter' && holder.several === false
+                ? 'Only the most likely output is taken, and only if it reaches this.'
+                : '50% is an even call. Raise it to fire only when Jev is confident.'));
+        return;
+    }
+    const nodeLike = { profileId: holder.profileId || decider?.profileId || null };
+    const { models } = modelsFor(nodeLike);
+    const wrap = el('div', 'pc-model-picker');
+    wrap.append(modelCombo({
+        value: holder.model ?? null,
+        models,
+        sameLabel: 'same model as the chat',
+        onPick: (v) => { holder.model = v; touch(); canvas.render(); },
+    }));
+    if (!models.length) wrap.append(loadModelsButton(nodeLike, 0));
+    box.append(field('Model (optional)', wrap, kind === 'sorter'
+        ? 'A small, fast model is plenty. One short call per send.'
+        : 'A small, fast model is plenty for a yes/no question.'));
 }
 
 /** Paste text, see which outputs light up. Nothing is sent. */
@@ -2913,45 +3150,47 @@ function renderModelEditor(box, node) {
  * because a provider can offer a model the list has not caught up with yet.
  */
 function renderModelPicker(box, node) {
-    const source = sourceForBlock(node);
-    const fromUi = source ? modelsForSource(source) : [];
-    const models = fromUi.length ? fromUi : cachedModels(source);
+    const { source, models } = modelsFor(node);
     const inherited = effectiveModel({ ...node, model: null });
 
     const wrap = el('div', 'pc-model-picker');
-
-    if (models.length) {
-        const pairs = [['', inherited ? `— same as the connection (${inherited}) —` : '— same as the connection —']];
-        const seen = new Set();
-        for (const m of models) {
-            if (seen.has(m.id)) continue;
-            seen.add(m.id);
-            pairs.push([m.id, m.group ? `${m.group} · ${m.label}` : m.label]);
-        }
-        // A model saved earlier that the list no longer offers must still show.
-        if (node.model && !seen.has(node.model)) pairs.push([node.model, `${node.model} (not in the list)`]);
-
-        wrap.append(dropdown(pairs, node.model ?? '', (v) => {
-            node.model = v || null;
-            touch();
-            canvas.render();
-            renderInspector();
-        }));
-    } else {
+    wrap.append(modelCombo({
+        value: node.model ?? null,
+        models,
+        sameLabel: inherited ? `same as the connection (${inherited})` : 'same as the connection',
+        onPick: (v) => { node.model = v; touch(); canvas.render(); renderInspector(); },
+    }));
+    if (!models.length) {
         wrap.append(el('div', 'pc-hint',
             source
-                ? `SillyTavern has no model list loaded for ${source} yet. Connect to it once, or type a model id below.`
-                : 'Pick a connection first, or type a model id below.'));
+                ? `SillyTavern has no model list loaded for ${source} yet. Load it below, or type a model id and press Enter.`
+                : 'Pick a connection first, or type a model id and press Enter.'));
     }
+    wrap.append(loadModelsButton(node, models.length));
 
-    const load = el('div', 'pc-btn menu_button');
-    load.innerHTML = `<i class="fa-solid fa-cloud-arrow-down"></i> ${models.length ? 'Refresh model list' : 'Load model list'}`;
+    box.append(field('Model', wrap,
+        node.model
+            ? `This block asks ${node.model}, whatever the connection is set to.`
+            : 'Click to see every model, or type to search. Leave it on "same as the connection" to follow the chat \u2014 or pick a cheap fast one for a thinking pass.'));
+}
+
+/** The models a block (or an AI rule going through that block's connection) can choose from. */
+function modelsFor(nodeLike) {
+    const source = sourceForBlock(nodeLike);
+    const fromUi = source ? modelsForSource(source) : [];
+    return { source, models: fromUi.length ? fromUi : cachedModels(source) };
+}
+
+function loadModelsButton(nodeLike, have) {
+    const source = sourceForBlock(nodeLike);
+    const load = el('div', 'pc-btn menu_button pc-load-models');
+    load.innerHTML = `<i class="fa-solid fa-cloud-arrow-down"></i> ${have ? 'Refresh model list' : 'Load model list'}`;
     load.title = source ? `Ask ${source} what models it offers` : 'Pick a connection first';
     load.addEventListener('click', async () => {
         const before = load.innerHTML;
         load.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Asking';
         try {
-            const got = await fetchModelList(node);
+            const got = await fetchModelList(nodeLike);
             toast(got.length ? `Found ${got.length} models.` : 'That provider returned no model list.',
                 got.length ? 'success' : 'error');
         } catch (err) {
@@ -2960,23 +3199,35 @@ function renderModelPicker(box, node) {
         load.innerHTML = before;
         renderInspector();
     });
-    wrap.append(load);
+    return load;
+}
 
-    const manual = el('input', 'text_pole');
-    manual.placeholder = 'or type a model id';
-    manual.value = node.model ?? '';
-    manual.addEventListener('change', () => {
-        node.model = manual.value.trim() || null;
-        touch();
-        canvas.render();
-        renderInspector();
-    });
-    wrap.append(manual);
-
-    box.append(field('Model', wrap,
-        node.model
-            ? `This block asks ${node.model}, whatever the connection is set to.`
-            : 'Leave this alone to follow the connection. Set it to run this block on a different model — a cheap fast one for a thinking pass, say.'));
+/**
+ * The model picker as a small pop-up on the canvas, from the model line of a
+ * Generate block, so a model can be changed without the settings pane.
+ */
+function openModelPopover(node, anchor) {
+    document.querySelector('.pc-model-pop')?.remove();
+    const pop = el('div', 'pc-model-pop pc-menu');
+    const r = anchor.getBoundingClientRect();
+    pop.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - 340))}px`;
+    pop.style.top = `${Math.min(r.bottom + 4, window.innerHeight - 340)}px`;
+    const { models } = modelsFor(node);
+    const inherited = effectiveModel({ ...node, model: null });
+    pop.append(el('div', 'pc-menu-head', `Model for "${node.title || 'Generate'}"`));
+    const close = () => { pop.remove(); document.removeEventListener('mousedown', outside, true); };
+    const outside = (e) => { if (!pop.contains(e.target)) close(); };
+    pop.append(modelCombo({
+        value: node.model ?? null,
+        models,
+        sameLabel: inherited ? `same as the connection (${inherited})` : 'same as the connection',
+        autofocus: true,
+        onPick: (v) => { node.model = v; close(); touch(); canvas.render(); if (selected === node) renderInspector(); },
+        onClose: () => setTimeout(() => { if (!pop.contains(document.activeElement)) close(); }, 0),
+    }));
+    if (!models.length) pop.append(el('div', 'pc-hint', 'No model list loaded yet: type a model id and press Enter, or load the list from the block\u2019s settings.'));
+    root.append(pop);
+    setTimeout(() => document.addEventListener('mousedown', outside, true), 0);
 }
 
 /* ================================================================== */
@@ -3372,7 +3623,7 @@ function onCanvasMenu({ event, node, wire, at, group = null, several = null }) {
     } else if (group) {
         menu.append(item(group.collapsed ? 'Open the group' : 'Fold into one block', group.collapsed ? 'fa-up-right-and-down-left-from-center' : 'fa-down-left-and-up-right-to-center', () => canvas.setCollapsed(group.id, !group.collapsed)));
         menu.append(item(group.enabled === false ? 'Switch the group on' : 'Switch the whole group off', 'fa-power-off', () => { canvas.toggleGroup(group.id); renderInspector(); }));
-        menu.append(item('Rename\u2026', 'fa-pen', () => canvas.select({ kind: 'group', id: group.id })));
+        menu.append(item('Rename\u2026', 'fa-pen', () => showSettings({ kind: 'group', id: group.id })));
         menu.append(item('Copy the group', 'fa-copy', () => copySelection(false, { groupIds: [group.id] })));
         menu.append(item('Save the group to the library\u2026', 'fa-bookmark', () => savePickToLibrary({ groupIds: [group.id] })));
         menu.append(item('Ungroup (the blocks stay)', 'fa-object-ungroup', () => { ungroup(current, group.id); selected = null; selectedKind = null; canvas.render(); renderInspector(); }));
@@ -3390,11 +3641,11 @@ function onCanvasMenu({ event, node, wire, at, group = null, several = null }) {
                 wire.loop.stopWhenSame = wire.loop.stopWhenSame === false; touch(); renderInspector();
             }));
         }
-        menu.append(item('Loop settings\u2026', 'fa-sliders', () => canvas.select({ kind: 'wire', id: wire.id })));
+        menu.append(item('Loop settings\u2026', 'fa-sliders', () => showSettings({ kind: 'wire', id: wire.id })));
         menu.append(item('Remove this loop', 'fa-trash-can', () => { disconnect(current, wire.id); selected = null; canvas.render(); renderInspector(); }));
     } else if (wire?.kind === WIRE_KINDS.SAVE) {
         menu.append(el('div', 'pc-menu-head', 'Saves the answer into memory'));
-        menu.append(item('Settings\u2026', 'fa-sliders', () => canvas.select({ kind: 'wire', id: wire.id })));
+        menu.append(item('Settings\u2026', 'fa-sliders', () => showSettings({ kind: 'wire', id: wire.id })));
         menu.append(item('Stop saving (cut the wire)', 'fa-scissors', () => { disconnect(current, wire.id); canvas.render(); renderInspector(); }));
     } else if (wire) {
         for (const [kind, label] of Object.entries(WIRE_LABEL)) {
@@ -3403,7 +3654,7 @@ function onCanvasMenu({ event, node, wire, at, group = null, several = null }) {
         if (wire.kind !== WIRE_KINDS.TOGETHER && !wire.loop) {
             menu.append(wire.condition
                 ? item('Remove its condition', 'fa-filter-circle-xmark', () => { delete wire.condition; touch(); canvas.render(); renderInspector(); })
-                : item('Add a condition\u2026', 'fa-filter', () => { wire.condition = { mode: 'expr', formula: '' }; touch(); canvas.select({ kind: 'wire', id: wire.id }); }));
+                : item('Add a condition\u2026', 'fa-filter', () => { wire.condition = { mode: 'expr', formula: '' }; touch(); showSettings({ kind: 'wire', id: wire.id }); }));
             menu.append(wire.mode === 'activate'
                 ? item('Send the text again', 'fa-align-left', () => { delete wire.mode; touch(); canvas.render(); renderInspector(); })
                 : item('Only switch it on (Activate)', 'fa-bolt', () => { wire.mode = 'activate'; touch(); canvas.render(); renderInspector(); }));
@@ -3414,6 +3665,7 @@ function onCanvasMenu({ event, node, wire, at, group = null, several = null }) {
             menu.append(item('Copy', 'fa-copy', () => copySelection(false, { nodeIds: [node.id] })));
             menu.append(item('Save to library\u2026', 'fa-bookmark', () => savePickToLibrary({ nodeIds: [node.id] })));
             if (node.type === NODE_TYPES.GENERATE) menu.append(item('Save its answers to memory / a lorebook', 'fa-floppy-disk', () => saveAnswersToMemory(node)));
+            if (node.type === NODE_TYPES.DECIDER) menu.append(item('Keep its choices in memory', 'fa-floppy-disk', () => saveDecisionsToMemory(node)));
             menu.append(item('Duplicate', 'fa-clone', () => duplicateSelected(node, false)));
             menu.append(item('Duplicate with its inputs', 'fa-clone', () => duplicateSelected(node, true)));
         }
@@ -3513,7 +3765,7 @@ function onCanvasMenu({ event, node, wire, at, group = null, several = null }) {
 }
 
 export function refreshIfOpen() {
-    if (isOpen()) { renderStatus(); renderSidebar(); }
+    if (isOpen()) { renderStatus(); renderSidebar(); scheduleTokenCount(300); }
 }
 
 export function lastPreview() {

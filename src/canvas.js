@@ -14,8 +14,8 @@
 import {
     NODE_TYPES, WIRE_KINDS, connect, disconnect, removeNode, touchGraph, wiresInto, deciderKeys, outPorts, hasPorts,
     groupMembers, ungroup, deleteGroup, groupOf, inOffGroup, settleOnBlankets, gatherBlanket, setGroupEnabled, blanketAt, GROUP_MIN,
-} from './state.js?v=0.15.0';
-import { selectLabel } from './select.js?v=0.15.0';
+} from './state.js?v=0.16.0';
+import { selectLabel } from './select.js?v=0.16.0';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -107,7 +107,7 @@ export function ruleLabel(c) {
         }
         case 'ai': {
             const q = String(c.question ?? '').trim();
-            return q ? `AI says yes: "${q.length > 40 ? q.slice(0, 40) + '\u2026' : q}"` : 'no question yet';
+            return q ? `${c.engine === 'jev' ? 'Jev' : 'AI'} says yes: "${q.length > 40 ? q.slice(0, 40) + '\u2026' : q}"` : 'no question yet';
         }
         default: return c.mode;
     }
@@ -128,6 +128,8 @@ export class Canvas {
         this.drag = null;
         this.linking = null;
         this.trace = null;          // last compile trace, keyed by node id
+        this.tokens = null;         // live token counts, keyed by node id
+        this.tokensKey = '';
 
         host.classList.add('pc-canvas');
         host.innerHTML = '';
@@ -160,6 +162,7 @@ export class Canvas {
 
     setGraph(graph) {
         if (!graph) return;
+        if (graph !== this.graph) { this.tokens = null; this.tokensKey = ''; }
         this.graph = graph;
         this.selection = null;
         this.render();
@@ -168,6 +171,49 @@ export class Canvas {
     setTrace(trace) {
         this.trace = new Map((trace ?? []).map(t => [t.id, t]));
         this.render();
+    }
+
+    /**
+     * Token counts for the blocks, worked out in the background as you edit.
+     * @param {Map<string, {own?:number, in?:number, out?:number, total?:number, exact?:boolean}>|null} map
+     */
+    setTokens(map) {
+        const key = map ? JSON.stringify([...map]) : '';
+        if (key === this.tokensKey) return;
+        this.tokensKey = key;
+        this.tokens = map;
+        this.render();
+    }
+
+    /** The token chip for a block's header, or null. */
+    #tokenChip(node) {
+        const fmt = (n) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : `${n}`);
+        const t = this.tokens?.get(node.id);
+        const tr = this.trace?.get(node.id);
+        const chip = document.createElement('span');
+        chip.className = 'pc-tok';
+        const how = t && t.exact === false ? 'estimated at four characters a token' : 'counted with SillyTavern\u2019s tokenizer for the current model';
+        const approx = t && t.exact === false ? '\u2248' : '';
+        if (t && node.type === NODE_TYPES.OUTPUT && t.total) {
+            chip.textContent = `${approx}${fmt(t.total)} tok`;
+            chip.title = `The whole prompt this canvas would send right now: ${t.total.toLocaleString()} tokens (${how}).`;
+            chip.classList.add('pc-tok-total');
+        } else if (t && node.type === NODE_TYPES.GENERATE && t.in !== undefined) {
+            chip.textContent = `${approx}${fmt(t.in)} \u2192 \u2264${fmt(t.out)}`;
+            chip.title = `This block is asked about ${t.in.toLocaleString()} tokens and may answer with up to ${t.out.toLocaleString()} (its "Longest reply"). Tokens ${how}.`;
+        } else if (t && t.own) {
+            chip.textContent = `${approx}${fmt(t.own)} tok`;
+            chip.title = t.loose
+                ? `${t.own.toLocaleString()} tokens of its own text (${how}). Not in the prompt right now: nothing it is wired to reaches Output on this send.`
+                : `This block adds ${t.own.toLocaleString()} tokens of its own text (${how}). Counted again as you edit.`;
+            if (t.loose) chip.classList.add('pc-tok-loose');
+        } else if (!t && tr?.chars && tr.status === 'in') {
+            // No live count (switched off in the settings): the last preview's estimate.
+            const n = Math.ceil(tr.chars / 4);
+            chip.textContent = `\u2248${fmt(n)} tok`;
+            chip.title = 'About how many tokens this block adds (its own text, from the last preview)';
+        } else return null;
+        return chip;
     }
 
     applyTransform() {
@@ -385,6 +431,14 @@ export class Canvas {
         title.className = 'pc-node-title';
         title.textContent = g.title || 'Group';
         head.append(badge, title);
+        const groupTok = members.reduce((n, m) => n + (this.tokens?.get(m.id)?.own ?? 0), 0);
+        if (groupTok && g.enabled !== false) {
+            const chip = document.createElement('span');
+            chip.className = 'pc-tok';
+            chip.textContent = groupTok >= 1000 ? `${(groupTok / 1000).toFixed(1)}k tok` : `${groupTok} tok`;
+            chip.title = `The blocks in this group add ${groupTok.toLocaleString()} tokens of their own text.`;
+            head.append(chip);
+        }
         if (g.enabled === false) head.append(this.#offPill('This whole group is switched off. Nothing in it is sent, and nothing passes through it.'));
         head.append(this.#groupButton('open', 'fa-up-right-and-down-left-from-center', 'Open the group: lay it out as a blanket you can put blocks on and take them off'));
         head.append(this.#groupToggle(g));
@@ -616,15 +670,9 @@ export class Canvas {
         title.title = node.title || '';
 
         head.append(badge, title);
-        // Roughly how much of the prompt this block is, from the last preview.
-        if (t?.chars && t.status === 'in') {
-            const tok = document.createElement('span');
-            tok.className = 'pc-tok';
-            const n = Math.ceil(t.chars / 4);
-            tok.textContent = n >= 1000 ? `\u2248${(n / 1000).toFixed(1)}k tok` : `\u2248${n} tok`;
-            tok.title = 'About how many tokens this block adds (its own text, from the last preview)';
-            head.append(tok);
-        }
+        // How much of the prompt this block is.
+        const chip = this.#tokenChip(node);
+        if (chip) head.append(chip);
         if (groupOff && node.enabled !== false) {
             head.append(this.#offPill('Its group is switched off, so this block sends nothing and nothing passes through it.'));
         } else if (node.enabled === false) {
@@ -665,7 +713,9 @@ export class Canvas {
             const routing = routingOf(node);
             const mode = document.createElement('div');
             mode.className = `pc-dec-mode${routing ? '' : ' pc-dec-unset'}`;
-            mode.textContent = routing ? ROUTING_WORDS[routing] : 'Not set up yet \u2014 select it and choose how it routes';
+            mode.textContent = routing
+                ? (routing === 'ai' && node.sorter?.engine === 'jev' ? 'Jev picks the outputs that apply' : ROUTING_WORDS[routing])
+                : 'Not set up yet \u2014 select it and choose how it routes';
             list.append(mode);
             if (routing === 'random') {
                 const total = keys.reduce((n, k) => n + Math.max(0, Number(k.weight ?? 1)), 0) || 1;
@@ -738,6 +788,14 @@ export class Canvas {
                 ? `<i class="fa-solid fa-microchip"></i> ${esc(where)} \u00b7 <b>${esc(actual)}</b>`
                 : `<i class="fa-solid fa-microchip"></i> ${esc(where)}`;
             model.title = node.model ? 'This block\u2019s own model.' : node.profileId ? 'The model this connection profile uses.' : 'Follows whatever model the chat is using right now.';
+            if (node.type === NODE_TYPES.GENERATE && this.hooks.onModelClick) {
+                model.classList.add('pc-node-model-pick');
+                model.insertAdjacentHTML('beforeend', ' <i class="fa-solid fa-caret-down pc-model-caret"></i>');
+                model.title += ' Click to choose another.';
+                model.addEventListener('mousedown', e => e.stopPropagation());
+                model.addEventListener('dblclick', e => e.stopPropagation());
+                model.addEventListener('click', (e) => { e.stopPropagation(); this.hooks.onModelClick(node, model); });
+            }
             el.append(model);
         }
 
@@ -1187,7 +1245,7 @@ export class Canvas {
             label.textContent = tie ? TOGETHER_LABEL
                 : wire.loop ? `\u21ba ${keyName ? keyName + ' \u00b7 ' : ''}${wire.loop.max ?? 3}\u00d7 max`
                 // The output's name is already on its dot, so a mode wire just says what it does.
-                : wire.kind === WIRE_KINDS.SAVE ? `\u2913 save${{ append: ' (add)', keep: ' (add, keep last)' }[this.graph.nodes[wire.to]?.saveMode] ?? ''}`
+                : wire.kind === WIRE_KINDS.SAVE ? `\u2913 save${keyName ? ` ${keyName}` : ''}${{ append: ' (add)', keep: ' (add, keep last)' }[this.graph.nodes[wire.to]?.saveMode] ?? ''}`
                 : mode === 'activate' ? '\u26a1 activate'
                 : mode === 'result' ? `\u2192 ${srcNode?.type === NODE_TYPES.LOREBOOK ? 'entry names' : wire.result === 'matched' ? 'matched words' : 'result'}`
                 : keyName ?? (WIRE_LABEL[wire.kind] ?? wire.kind);
@@ -1348,7 +1406,9 @@ export class Canvas {
             }
 
             if (wireHit) {
-                this.select({ kind: 'wire', id: wireHit.dataset.id });
+                // A loop's label says "click to change": show its settings.
+                const sel = { kind: 'wire', id: wireHit.dataset.id };
+                if (wireHit.classList.contains('pc-wire-label-loop')) this.#reveal(sel); else this.select(sel);
                 return;
             }
 
@@ -1635,9 +1695,14 @@ export class Canvas {
         else {
             this.hooks.onChange?.();
             // A new loop: show its settings, so the limit is seen and can be changed.
-            if (res.wire?.loop) { this.render(); this.select({ kind: 'wire', id: res.wire.id }); return; }
+            if (res.wire?.loop) { this.render(); this.#reveal({ kind: 'wire', id: res.wire.id }); return; }
         }
         this.render();
+    }
+
+    /** Select, and ask for the settings pane to be shown if it is folded away. */
+    #reveal(sel) {
+        if (this.hooks.onReveal) this.hooks.onReveal(sel); else this.select(sel);
     }
 
     select(sel) {
@@ -1657,7 +1722,7 @@ export class Canvas {
             this.hooks.onToast?.('That is a "send together" tie. Nothing flows along it, so there is nothing to cycle.');
             return;
         }
-        if (wire.loop || wire.kind === WIRE_KINDS.SAVE) { this.select({ kind: 'wire', id: wireId }); return; }
+        if (wire.loop || wire.kind === WIRE_KINDS.SAVE) { this.#reveal({ kind: 'wire', id: wireId }); return; }
         const order = [WIRE_KINDS.MERGE, WIRE_KINDS.APPEND, WIRE_KINDS.PREPEND];
         wire.kind = order[(order.indexOf(wire.kind) + 1) % order.length];
         touchGraph(this.graph);

@@ -20,7 +20,7 @@
  *   chat binding > character binding > activeGraphId
  */
 
-import { stagePortId, parseStatePort, ensureStageIds } from './statevals.js?v=0.15.0';
+import { stagePortId, parseStatePort, ensureStageIds } from './statevals.js?v=0.16.0';
 
 export const MODULE = 'prompt-canvas';
 export const META_KEY = 'promptCanvasGraph';
@@ -724,15 +724,23 @@ export function connect(graph, fromId, toId, kind = WIRE_KINDS.APPEND, { port = 
     // Anything wired into a Memory block saves into it; only an answer can.
     if (graph.nodes[toId].type === NODE_TYPES.MEMORY || kind === WIRE_KINDS.SAVE) {
         if (graph.nodes[toId].type !== NODE_TYPES.MEMORY) return { ok: false, reason: 'Only a Memory block can have answers saved into it.' };
-        if (graph.nodes[fromId].type !== NODE_TYPES.GENERATE) {
-            return { ok: false, reason: 'A Memory block keeps what a Generate block answers. Wire a Generate block into it, or type its starting text in its settings.' };
+        const saver = graph.nodes[fromId];
+        // A Decider saves from one of its outputs: when that output is
+        // chosen, what it decided goes into the memory.
+        const fromDecider = saver.type === NODE_TYPES.DECIDER;
+        if (fromDecider) {
+            if (!outPorts(saver).some(k => k.id === port)) {
+                return { ok: false, reason: 'Drag from one of the Decider\u2019s outputs onto the Memory block, so it knows when to save.' };
+            }
+        } else if (saver.type !== NODE_TYPES.GENERATE) {
+            return { ok: false, reason: 'A Memory block keeps what a Generate block answers or what a Decider decides. Wire one of those into it, or type its starting text in its settings.' };
         }
-        if (Object.values(graph.wires).some(w => w.kind === WIRE_KINDS.SAVE && w.from === fromId && w.to === toId)) {
-            return { ok: false, reason: 'That answer is already saved into this memory.' };
+        if (Object.values(graph.wires).some(w => w.kind === WIRE_KINDS.SAVE && w.from === fromId && w.to === toId && (!fromDecider || w.port === port))) {
+            return { ok: false, reason: fromDecider ? 'That output already saves into this memory.' : 'That answer is already saved into this memory.' };
         }
         // No cycle check: a save lands after the send, so a Generate block
         // can read a memory and save into it (the heart of "keep updating").
-        const wire = { id: uid('w'), from: fromId, to: toId, kind: WIRE_KINDS.SAVE };
+        const wire = { id: uid('w'), from: fromId, to: toId, kind: WIRE_KINDS.SAVE, ...(fromDecider ? { port } : {}) };
         graph.wires[wire.id] = wire;
         touchGraph(graph);
         return { ok: true, wire };

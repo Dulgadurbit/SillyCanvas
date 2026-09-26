@@ -16,10 +16,11 @@
  *    recorded as the error, the run continues, and you see it in the trace.
  */
 
-import { ctx, safe, settings, save as saveSettings, NODE_TYPES, togetherGroup, loopWires, loopSection, activeGraph } from './state.js?v=0.15.0';
-import { compile, collect, generateOrder, generateLevels, gatherContext, evaluateCondition, liveNodes, generateDeps, textOf, picks, wireHolds } from './compile.js?v=0.15.0';
-import { plannedSaves, writeSaves, mirrorToLorebook } from './memory.js?v=0.15.0';
-import { applySelect } from './select.js?v=0.15.0';
+import { ctx, safe, settings, save as saveSettings, NODE_TYPES, togetherGroup, loopWires, loopSection, activeGraph } from './state.js?v=0.16.0';
+import { compile, collect, generateOrder, generateLevels, gatherContext, evaluateCondition, liveNodes, generateDeps, textOf, picks, wireHolds } from './compile.js?v=0.16.0';
+import { plannedSaves, writeSaves, mirrorToLorebook } from './memory.js?v=0.16.0';
+import { jevYesNo, jevSort } from './jev.js?v=0.16.0';
+import { applySelect } from './select.js?v=0.16.0';
 
 /** The connection the chat itself is using, when a block does not name one. */
 function currentProfileId() {
@@ -788,7 +789,10 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
 
     // Answers saved into Memory blocks land now, after the send is built, on
     // the message this send answers. A swipe saves over its own earlier save.
-    const saves = safe(() => plannedSaves(graph, results, live, { applySelect, wireHolds })) ?? [];
+    const saves = safe(() => plannedSaves(graph, results, live, {
+        applySelect, wireHolds, decisions,
+        deciderText: (dec) => textOf(collect(graph, dec.id, live, results, decisions).messages),
+    })) ?? [];
     const saveProblems = [];
     if (saves.length) {
         safe(() => writeSaves(saves, live.chat ?? []));
@@ -809,6 +813,15 @@ export async function run(graph, { dryRun = false, signal = null, onStage = null
  */
 async function askYesNo(dec, cond, incoming, signal) {
     const question = String(cond.question ?? '').trim();
+    if (cond.engine === 'jev') {
+        try {
+            return { ...await jevYesNo(incoming, question, { threshold: cond.threshold, signal }), unclear: false, engine: 'jev' };
+        } catch (err) {
+            if (signal?.aborted) return { yes: false, unclear: true, text: '' };
+            console.warn(`[prompt-canvas] "${dec.title}" Jev rule failed: ${err?.message ?? err}`);
+            return { yes: false, unclear: true, error: err?.message ?? String(err), text: '', engine: 'jev' };
+        }
+    }
     const pseudo = {
         id: `${dec.id}-ai`,
         title: `${dec.title}: ${question.slice(0, 40)}`,
@@ -855,6 +868,16 @@ async function askYesNo(dec, cond, incoming, signal) {
 export async function askSorter(dec, incoming, signal) {
     const keys = (dec.keys ?? []).filter(Boolean);
     const several = dec.sorter?.several !== false;
+    if (dec.sorter?.engine === 'jev') {
+        try {
+            const r = await jevSort(incoming, keys, { several, instructions: dec.sorter?.instructions, threshold: dec.sorter?.threshold, signal });
+            return { keys: r.keys, text: r.text, why: r.why };
+        } catch (err) {
+            if (signal?.aborted) return { keys: [], why: 'stopped', text: '' };
+            console.warn(`[prompt-canvas] "${dec.title}" Jev sorter failed: ${err?.message ?? err}`);
+            return { keys: [], why: `Jev could not be asked (${err?.message ?? err}), so it takes Otherwise`, text: '' };
+        }
+    }
     const pseudo = {
         id: `${dec.id}-sorter`,
         title: `${dec.title}: AI sorts`,

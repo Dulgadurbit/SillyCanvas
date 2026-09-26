@@ -17,8 +17,8 @@
  * It edits the block directly; the canvas and preview follow along.
  */
 
-import { computeState, stageFor, stageText, ensureStageIds, stagePortId } from './statevals.js?v=0.15.0';
-import { newStateValue, uid, ROLES } from './state.js?v=0.15.0';
+import { computeState, stageFor, stageText, ensureStageIds, stagePortId } from './statevals.js?v=0.16.0';
+import { newStateValue, uid, ROLES } from './state.js?v=0.16.0';
 
 const el = (tag, cls, text) => {
     const n = document.createElement(tag);
